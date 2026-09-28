@@ -3,6 +3,7 @@ import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-route
 import { Building2, Construction, FileUp, HardHat, House, IndianRupee, LogOut, MessageSquareWarning, Network, Settings, Users } from "lucide-react";
 import { api, ApiError, setViewOffice } from "../lib/api";
 import type { Me, Role } from "../lib/types";
+import OfficePicker from "./OfficePicker";
 
 export function useMe() {
   return useQuery<Me>({ queryKey: ["me"], queryFn: () => api<Me>("/api/auth/me"), retry: false, staleTime: 60_000 });
@@ -13,8 +14,6 @@ export function Can({ roles, children }: { roles: Role[]; children: React.ReactN
   const { data } = useMe();
   return data && roles.includes(data.role) ? <>{children}</> : null;
 }
-
-const INDENT: Record<string, number> = { department: 0, wing: 0, circle: 1, division: 2, subdivision: 3 };
 
 export default function StaffLayout() {
   const me = useMe();
@@ -53,16 +52,7 @@ export default function StaffLayout() {
         <NavLink className="logo" to="/app/dashboard">
           <span className="mark">P</span><span>Pravi<small>R&amp;B Asset Tracker · Gujarat</small></span>
         </NavLink>
-        {me.data.offices.length > 1 ? (
-          <div className="office-pick" title="Which office's data you are looking at">
-            <span className="lbl-s">Viewing</span>
-            <select value={me.data.office.id} onChange={(e) => switchOffice(e.target.value)}>
-              {me.data.offices.map((o) => (
-                <option key={o.id} value={o.id}>{"  ".repeat(Math.max(0, (INDENT[o.level] ?? 0) - (INDENT[me.data!.home.level] ?? 0)))}{o.name}</option>
-              ))}
-            </select>
-          </div>
-        ) : <div className="office-pick"><span className="lbl-s">Office</span><b>{me.data.office.name}</b></div>}
+        <OfficePicker me={me.data} onPick={(o) => switchOffice(String(o.id))} />
         <Item to="/app/dashboard" icon={House} label="Home" />
         <Item to="/app/complaints" icon={MessageSquareWarning} label="Complaints" count={k ? k.new_complaints + k.to_assign : undefined} />
         <Item to="/app/assets" icon={Building2} label="Roads & buildings" />

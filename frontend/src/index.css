@@ -169,9 +169,30 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .side .me { margin-top: auto; border-top: 1px solid rgba(255,255,255,.12); padding: 12px 10px 0; font-size: 13px; }
 .side .me .r { color: #9fb3d6; font-size: 12px; }
 .side .me button { margin-top: 8px; width: 100%; background: transparent; color: #fff; border-color: rgba(255,255,255,.3); }
-.side .office-pick { margin: 0 4px 10px; padding: 8px 10px; border-radius: 9px; background: rgba(255,255,255,.07); font-size: 13px; }
-.side .office-pick .lbl-s { display: block; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: #8ea3c8; margin-bottom: 3px; }
-.side .office-pick select { width: 100%; background: #fff; color: var(--ink); padding: 5px 6px; font-size: 13px; border-radius: 6px; }
+.opick { position: relative; margin: 0 2px 12px; }
+.opick-btn { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 9px 10px; border-radius: 10px;
+  background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14); color: #fff; font-weight: 500; }
+.opick-btn:hover:not(:disabled) { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.28); }
+.opick.open .opick-btn { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.35); }
+.opick-btn:disabled { cursor: default; opacity: 1; }
+.opick-ic { width: 30px; height: 30px; flex: none; border-radius: 8px; display: grid; place-items: center; background: var(--accent); color: #fff; }
+.opick-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.opick-lvl { font-size: 10.5px; letter-spacing: .06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; color: #9fb3d6; font-weight: 600; }
+.opick-name { font-size: 14px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.opick-chev { flex: none; color: #b9c9e6; }
+.opick-back { display: flex; align-items: center; gap: 5px; margin: 6px 2px 0; padding: 2px 6px; border: 0; background: none;
+  color: #ffd29a; font-size: 12px; font-weight: 600; }
+.opick-back:hover { text-decoration: underline; }
+.opick-menu { position: fixed; width: 300px; max-height: 60vh; overflow-y: auto; z-index: 1500;
+  background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 40px rgba(15,23,42,.28); padding: 6px; }
+.opick-head { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); padding: 6px 10px 4px; font-weight: 600; }
+.opick-item { width: 100%; display: flex; align-items: center; gap: 9px; text-align: left; border: 0; background: none; border-radius: 8px;
+  padding: 7px 10px; color: var(--ink); font-weight: 500; }
+.opick-item:hover { background: #f1f5fb; }
+.opick-item.on { background: #e8effb; color: var(--brand); }
+.opick-iic { flex: none; color: var(--brand-2); }
+.opick-iname { display: block; font-size: 13.5px; font-weight: 600; }
+.opick-isub { display: block; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sla { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; }
 .sla.ok { background: var(--green-bg); color: var(--green); } .sla.late { background: var(--red-bg); color: var(--red); }
 .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 13px; color: var(--ink-3); margin-bottom: 4px; }
@@ -184,7 +205,9 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .side { position: sticky; height: auto; flex-direction: row; align-items: center; overflow-x: auto; padding: 8px; gap: 2px; }
   .side .logo { padding: 0 8px 0 4px; } .side .logo small, .side .sec, .side .me .r { display: none; }
   .side a.nav { white-space: nowrap; padding: 8px 10px; } .side a.nav span.lbl { display: none; }
-  .side .office-pick { margin: 0 4px; padding: 4px 6px; min-width: 150px; } .side .office-pick .lbl-s { display: none; }
+  .opick { margin: 0 4px; min-width: 170px; } .opick-btn { padding: 5px 8px; } .opick-ic { width: 24px; height: 24px; } .opick-back { display: none; }
+  .opick-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+  .opick-menu { width: calc(100vw - 16px); max-width: 360px; }
   .side .me { margin: 0 0 0 auto; border: 0; padding: 0; } .side .me .n { display: none; } .side .me button { margin: 0; width: auto; }
   .shell .page { padding: 16px; }
 }
