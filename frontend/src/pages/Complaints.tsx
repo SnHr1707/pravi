@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, ExternalLink } from "lucide-react";
 import { api, postForm } from "../lib/api";
+import { compressImage } from "../lib/image";
 import type { Complaint } from "../lib/types";
 import { daysAgo, fdate } from "../lib/format";
 import { Alert, Badge, ComplaintStatus, ErrorBox, Loading, Modal, useToast } from "../components/ui";
@@ -140,7 +141,7 @@ function ActionModal({ kind, c, onClose }: { kind: "verify" | "assign" | "fix"; 
       <div className="actions">
         <button onClick={onClose}>Cancel</button>
         <button className="btn-primary" onClick={() => run(async () => {
-          const fd = new FormData(); fd.append("notes", notes); if (photo) fd.append("photo", photo);
+          const fd = new FormData(); fd.append("notes", notes); if (photo) fd.append("photo", await compressImage(photo), "photo.jpg");
           await postForm(`/api/complaints/${c.id}/fix`, fd); done("Marked fixed — waiting for citizen");
         })}>Mark as repaired</button>
       </div>

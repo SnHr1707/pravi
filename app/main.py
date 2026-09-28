@@ -2,6 +2,7 @@
 import json
 import re
 import time
+from contextlib import asynccontextmanager
 import uuid
 from collections import defaultdict, deque
 from datetime import date, datetime, timedelta
@@ -25,19 +26,27 @@ from .rules import (DEFAULT_WEIGHTS, WORK_LABEL, add_months, compute_flags, cont
                     liability_summary, liability_windows, load_ctx, money_at_risk, priority, works_on)
 from .seed import seed, seed_if_empty
 
-app = FastAPI(title="Pravi — R&B Asset Lifecycle Tracker", version="1.0",
-              description="Lifecycle inventory, liability tracking and priority for Gujarat R&B assets (demo: Vadodara).")
-
-
-@app.on_event("startup")
-def startup():
+def _startup():
     init_db(reset=RESET_DB_ON_START)
-    with Session(engine) as s:
-        if seed_if_empty(s, demo=SEED_DEMO):
-            print("[startup] seeded " + ("demo data" if SEED_DEMO else "login accounts only (SEED_DEMO=false)"))
+    try:
+        with Session(engine) as s:
+            if seed_if_empty(s, demo=SEED_DEMO):
+                print("[startup] seeded " + ("demo data" if SEED_DEMO else "login accounts only (SEED_DEMO=false)"))
+    except Exception as e:  # e.g. two serverless instances seeding at the same moment
+        print(f"[startup] seeding skipped: {type(e).__name__}")
     if not JWT_SECRET_FROM_ENV:
-        print("[startup] WARNING: JWT_SECRET not set; using a random secret (logins reset on restart)")
+        print("[startup] WARNING: JWT_SECRET not set; set it in production")
     print(f"[startup] document reading: rules" + (f" + LLM ({LLM_PROVIDER}: {LLM_MODEL})" if LLM_PROVIDER != "none" else " only"))
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    _startup()
+    yield
+
+
+app = FastAPI(title="Pravi — R&B Asset Lifecycle Tracker", version="1.0", lifespan=lifespan,
+              description="Lifecycle inventory, liability tracking and priority for Gujarat R&B assets (demo: Vadodara).")
 
 
 # ------------------------------------------------------------------ helpers

@@ -15,12 +15,18 @@ if _env.exists():
         k, v = line.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{BASE_DIR / 'pravi.db'}"
+# On serverless hosts (Vercel) only /tmp is writable; there you should always set DATABASE_URL (Neon).
+_local_db = "/tmp/pravi.db" if os.getenv("VERCEL") else BASE_DIR / "pravi.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{_local_db}"
 if DATABASE_URL.startswith("postgres://"):  # Neon/Heroku style URLs
     DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
 
-_jwt = os.getenv("JWT_SECRET")
+_jwt = os.getenv("JWT_SECRET", "").strip()
 JWT_SECRET_FROM_ENV = bool(_jwt)
+if not _jwt and not DATABASE_URL.startswith("sqlite"):
+    # stable across serverless instances even if JWT_SECRET was forgotten (set JWT_SECRET in production!)
+    import hashlib
+    _jwt = hashlib.sha256(("pravi-jwt::" + DATABASE_URL).encode()).hexdigest()
 JWT_SECRET = _jwt or secrets.token_urlsafe(48)
 JWT_HOURS = int(os.getenv("JWT_HOURS", "").strip() or "8")
 

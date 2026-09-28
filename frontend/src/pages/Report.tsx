@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Marker, Polyline, useMapEvents } from "react-leaflet";
 import { LocateFixed } from "lucide-react";
 import { api, postForm } from "../lib/api";
+import { compressImage } from "../lib/image";
 import { ISSUE_ICONS, T, type Lang } from "../lib/i18n";
 import { BaseMap, FitBounds } from "../components/AssetMap";
 import { Alert } from "../components/ui";
@@ -52,7 +53,7 @@ export default function Report() {
     const fd = new FormData();
     fd.append("lat", String(pin[0])); fd.append("lng", String(pin[1])); fd.append("issue_type", issue);
     fd.append("description", desc); fd.append("contact", contact); fd.append("language", lang);
-    if (photo) fd.append("photo", photo);
+    if (photo) fd.append("photo", await compressImage(photo), "photo.jpg");
     setBusy(true);
     try { setDone(await postForm<Result>("/api/public/complaints", fd)); window.scrollTo(0, 0); }
     catch (x: any) { setErr(x.message); } finally { setBusy(false); }

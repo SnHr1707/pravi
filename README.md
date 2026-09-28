@@ -172,6 +172,17 @@ npm run build      # rebuilds frontend/dist, which FastAPI serves
 
 **Tests:** `python tests/test_extraction.py`
 
+## Deploy on Vercel + Neon (free, no card)
+1. Push this folder to GitHub (`.env` and `*.db` are git-ignored).
+2. On [vercel.com](https://vercel.com), sign in with GitHub, then **Add New → Project** → import the repo. Vercel detects **FastAPI** (`app/main.py`). The built React app in `frontend/dist` is served by FastAPI, so no Node build is needed.
+3. Under **Environment Variables**, add:
+   - `DATABASE_URL`: the Neon **pooled** connection string. It is required on Vercel, because the server can't keep a local file.
+   - `JWT_SECRET`: any long random text.
+   - Optional: `OPENROUTER_API_KEY` and `LLM_MODEL`.
+4. Click **Deploy**. `vercel.json` gives each request up to 60 s, enough for LLM reading.
+
+Limits on Vercel: uploads must be under about 4.5 MB (photos are compressed in the browser first; tender PDFs are usually small).
+
 ## Deploy (Render + Neon, free)
 1. **Database:** create a free Postgres at [neon.tech](https://neon.tech) and copy the connection string.
 2. **Code:** push this folder to GitHub (`.env` and `*.db` are git-ignored).
