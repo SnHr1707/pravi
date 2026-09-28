@@ -4,12 +4,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { Alert } from "../components/ui";
 
-const DEMO = [
-  ["Executive Engineer", "ee_vadodara", "Exec@123"],
-  ["Deputy Engineer", "de_vadodara", "Engineer@123"],
-  ["Auditor (read-only)", "auditor_vadodara", "Audit@123"],
-];
-
 export default function Login() {
   const [u, setU] = useState("");
   const [p, setP] = useState("");
@@ -42,16 +36,6 @@ export default function Login() {
             {err && <Alert tone="red">{err}</Alert>}
             <button className="btn-primary w-full mt-3.5" disabled={busy}>{busy ? "Logging in…" : "Log in"}</button>
           </form>
-        </div>
-        <div className="card mt-3">
-          <div className="small muted mb-1.5">Demo accounts (click to fill)</div>
-          <table><tbody>
-            {DEMO.map(([r, un, pw]) => (
-              <tr key={un} className="cursor-pointer" onClick={() => { setU(un); setP(pw); }}>
-                <td className="small"><b>{r}</b></td><td className="mono small">{un}</td><td className="mono small">{pw}</td>
-              </tr>
-            ))}
-          </tbody></table>
         </div>
       </div>
     </div>
