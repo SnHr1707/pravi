@@ -20,6 +20,7 @@ export default function Landing() {
           </p>
           <div className="flex gap-3 flex-wrap">
             <Link className="btn btn-accent btn-lg border-0" to="/report">Report a road problem</Link>
+            <Link className="btn btn-lg border-0" to="/performance">How is R&amp;B doing near me?</Link>
             <Link className="btn btn-lg border-0" to="/login">Staff login</Link>
           </div>
         </div>

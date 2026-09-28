@@ -7,3 +7,6 @@ venv/
 .pytest_cache/
 frontend/node_modules/
 # frontend/dist is committed on purpose so the app runs without Node (python only)
+submission/
+
+_to_delete/

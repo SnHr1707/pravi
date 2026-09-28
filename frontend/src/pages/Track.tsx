@@ -51,6 +51,9 @@ export default function Track() {
                 <div>Location</div><div>{c.asset_name}{c.km !== null ? ` · km ${c.km}` : ""}</div>
                 <div>Reported</div><div>{fdt(c.created_at)}</div>
                 {c.assigned_to && <><div>Being fixed by</div><div>{c.assigned_to}</div></>}
+                {c.sla && c.sla.state !== "na" && <><div>Repair deadline</div><div>{fdt(c.sla.due)} ({c.sla.hours < 48 ? `${c.sla.hours} hours` : `${c.sla.hours / 24} days`})
+                  {c.sla.state === "overdue" && <span style={{ color: "var(--red)" }}> · late{c.sla.escalated_label ? ` — escalated to the ${c.sla.escalated_label}` : ""}</span>}
+                  {c.sla.state === "met" && <span style={{ color: "var(--green)" }}> · fixed on time</span>}</div></>}
               </div>
               {c.status === "rejected" ? (
                 <Alert tone="amber">This report was closed by the engineer (not an R&amp;B asset, or a duplicate).</Alert>

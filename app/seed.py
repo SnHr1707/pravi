@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from .auth import hash_password
 from .geo import point_at, slice_polyline
-from .models import Asset, Complaint, Document, Event, Inspection, Setting, User, Work
+from .models import Asset, Complaint, DigPermit, Document, Event, Inspection, Setting, User, Work
 from .rules import DEFAULT_WEIGHTS, add_months
 
 D = "Vadodara"
@@ -59,12 +59,13 @@ def seed_if_empty(session: Session, demo: bool = True) -> bool:
 
 
 def seed_users(session: Session):
-    for u, pw, name, role in [
-        ("de_vadodara", "Engineer@123", "A. Patel (Deputy Engineer)", "engineer"),
-        ("ee_vadodara", "Exec@123", "R. Desai (Executive Engineer)", "ee"),
-        ("auditor_vadodara", "Audit@123", "M. Shah (Audit Officer)", "auditor"),
-    ]:
-        session.add(User(username=u, password_hash=hash_password(pw), full_name=name, role=role, district=D))
+    from .models import Office
+    from .org import USERS, ensure_hierarchy
+    ensure_hierarchy(session)  # office tree first
+    offices = {o.code: o for o in session.exec(select(Office)).all()}
+    for u, pw, name, role, office in USERS:
+        session.add(User(username=u, password_hash=hash_password(pw), full_name=name, role=role, district=D,
+                         office_id=offices[office].id))
     session.add(Setting(key="priority_weights", value=json.dumps(DEFAULT_WEIGHTS)))
 
 
@@ -297,15 +298,21 @@ def seed(session: Session, today: date = None):
         work(bl1, "repair", "Leakage repairs, Civil Hospital Block B", "completed", CONTRACTORS[0],
              est=cost, awarded=cost, proposed=d(days + 20), sanctioned=d(days + 15), tendered=d(days + 12),
              awarded_on=d(days + 8), started=d(days + 5), completed=d(days), liability=3)
+    work(br1, "repair", "Replacement of damaged railing, Vishwamitri River Bridge", "proposed", None,
+         est=3.8e5, proposed=d(3), reason="Railing broken — citizen complaint, unsafe at night")
+    work(sec[("ODR-PK", 10)], "repair", "Patch repairs on ODR-PK km 12.0 to 16.0", "proposed", None,
+         est=1.8e6, k0=12, k1=16, proposed=d(6), reason="Potholes after monsoon; road rated 2/5")
     work(bl4, "structural_repair", "Structural repairs to staff quarters (columns, slabs)", "proposed", None,
          est=8.5e6, proposed=d(30), reason="Spalling concrete, exposed reinforcement")
 
     # ---------------- inspections
-    def insp(asset, days, cond, notes, kind="inspection", who="A. Patel"):
-        i = Inspection(asset_id=asset.id, kind=kind, inspected_on=d(days), condition=cond, notes=notes, inspector=who)
+    def insp(asset, days, cond, notes, kind="inspection", who="A. Patel", cls=None):
+        i = Inspection(asset_id=asset.id, kind=kind, inspected_on=d(days), condition=cond, notes=notes, inspector=who,
+                       safety_class=cls)
         session.add(i)
         label = {"inspection": "Inspection", "cleaning": "Cleaning", "structural_audit": "Structural audit"}[kind]
-        ev(asset, kind, f"{label}: " + (f"condition {cond}/5. " if cond else "") + notes, at(d(days), 11), actor=who)
+        ev(asset, kind, f"{label}: " + (f"class {cls}, " if cls else "") + (f"condition {cond}/5. " if cond else "") + notes,
+           at(d(days), 11), actor=who)
 
     for (code, s0), days, cond, note in [
         (("SH-VP", 0), 180, 4, "Surface fair, minor edge breaks"),
@@ -336,10 +343,10 @@ def seed(session: Session, today: date = None):
     insp(cu3, (T - (season + timedelta(days=20))).days, None, "Silt removed before monsoon", kind="cleaning")
     insp(cu4, (T - (season - timedelta(days=730))).days, None, "Cleaned", kind="cleaning")
     insp(cu5, (T - (season + timedelta(days=5))).days, None, "Silt removed before monsoon", kind="cleaning")
-    insp(bl1, 7 * 365 + 40, 3, "Seepage in terrace slab, cracks in partition walls", kind="structural_audit", who="GERI Vadodara")
-    insp(bl2, 2 * 365, 3, "Minor cracks; roof needs waterproofing", kind="structural_audit", who="GERI Vadodara")
-    insp(bl3, 3 * 365, 4, "Good", kind="structural_audit", who="GERI Vadodara")
-    insp(bl4, 9 * 365, 2, "Spalling of column concrete, corroded bars", kind="structural_audit", who="GERI Vadodara")
+    insp(bl1, 7 * 365 + 40, 3, "Seepage in terrace slab, cracks in partition walls", kind="structural_audit", who="GERI Vadodara", cls="C2B")
+    insp(bl2, 2 * 365, 3, "Minor cracks; roof needs waterproofing", kind="structural_audit", who="GERI Vadodara", cls="C3")
+    insp(bl3, 3 * 365, 4, "Good", kind="structural_audit", who="GERI Vadodara", cls="C3")
+    insp(bl4, 9 * 365, 2, "Spalling of column concrete, corroded bars", kind="structural_audit", who="GERI Vadodara", cls="C2A")
     session.flush()
 
     # ---------------- complaints
@@ -402,7 +409,7 @@ def seed(session: Session, today: date = None):
               assigned_days=7, assigned_kind="department", fixed_days=1)
     complaint(E, "MDR-KS", 5.2, "crack", "Road surface cracking and breaking", 3, "assigned", 6, verified_days=4,
               assigned_days=3, assigned_kind="contractor")
-    complaint(sec[("MDR-VW", 0)], "MDR-VW", 6.0, "crack", "Cracks on new road", 1, "open", 2)
+    c_dug = complaint(sec[("MDR-VW", 0)], "MDR-VW", 6.0, "crack", "Road broken where the gas pipeline was laid", 2, "open", 2)
     complaint(sec[("ODR-PK", 10)], "ODR-PK", 15.0, "pothole", "Potholes", 6, "closed", 40, verified_days=38,
               assigned_days=36, assigned_kind="department", fixed_days=24, closed_days=22)
     complaint(sec[("VR-DS", 15)], "VR-DS", 22.0, "pothole", "Road broken near Orsang bridge approach", 3, "open", 4, lang="gu")
@@ -411,5 +418,51 @@ def seed(session: Session, today: date = None):
               assigned_days=6, assigned_kind="department", point=(bl1.lat, bl1.lng))
     complaint(sec[("SH-VS", 15)], "SH-VS", 20.0, "other", "Diversion road dusty and broken during widening", 2, "open", 5)
     complaint(sec[("SH-VP", 0)], "SH-VP", 5.0, "other", "Street light not working", 1, "rejected", 30)
+    # complaints fixed and confirmed (for on-time statistics)
+    complaint(sec[("SH-VS", 0)], "SH-VS", 5.0, "pothole", "Pothole near the petrol pump", 2, "closed", 50,
+              verified_days=50, assigned_days=50, assigned_kind="department", fixed_days=50, closed_days=48)
+    complaint(sec[("MDR-KS", 13)], "MDR-KS", 20.0, "pothole", "Pothole on the bend", 1, "closed", 30,
+              verified_days=30, assigned_days=30, assigned_kind="department", fixed_days=30, closed_days=28)
+    complaint(sec[("SH-VD", 15)], "SH-VD", 20.5, "crack", "Edge of road broken", 1, "closed", 60,
+              verified_days=59, assigned_days=58, assigned_kind="department", fixed_days=56, closed_days=55)
+    complaint(sec[("VR-DS", 0)], "VR-DS", 5.0, "pothole", "Potholes near the school", 3, "closed", 70,
+              verified_days=69, assigned_days=68, assigned_kind="department", fixed_days=66, closed_days=65, lang="gu")
+    complaint(cu1, "SH-VD", 6.2, "waterlogging", "Water on the road after rain", 2, "closed", 20,
+              verified_days=20, assigned_days=20, assigned_kind="department", fixed_days=20, closed_days=18)
+    session.flush()
+
+    # ---------------- road-digging permits (utilities)
+    def permit(asset, k0, k1, agency, purpose, start, end, status, charge, note=None, restored=None):
+        p = DigPermit(asset_id=asset.id, road_code=asset.road_code, start_km=k0, end_km=k1, agency=agency,
+                      purpose=purpose, length_m=round((k1 - k0) * 1000), from_date=d(start), to_date=d(end),
+                      status=status, restoration_charge=charge, decision_note=note,
+                      decided_by="R. Desai" if status != "applied" else None,
+                      restored_on=d(restored) if restored is not None else None, created_by="A. Patel",
+                      created_at=at(d(start + 10)), district=D)
+        session.add(p)
+        session.flush()
+        ev(asset, "dig_applied", f"Road-cutting permit #{p.id} requested by {agency}: {purpose}, km {k0:g}–{k1:g}",
+           at(d(start + 10)), actor="A. Patel")
+        if status != "applied":
+            ev(asset, "dig_" + ("approved" if status in ("approved", "restored") else "rejected"),
+               f"Permit #{p.id} {'approved' if status in ('approved', 'restored') else 'rejected'}: {note or ''}",
+               at(d(start + 3)), actor="R. Desai")
+        if restored is not None:
+            ev(asset, "dig_restored", f"Road restored by {agency} after permit #{p.id}", at(d(restored)), actor="A. Patel")
+        return p
+
+    p1 = permit(sec[("MDR-VW", 0)], 5.6, 6.4, "Gujarat Gas Ltd", "Emergency repair of a leaking gas main", 45, 20, "approved",
+                3.2e5, "Emergency. Road is under the builder's guarantee; Gujarat Gas must restore it to the original specification")
+    p1.emergency = True
+    c_dug.permit_id = p1.id
+    session.add(c_dug)
+    ev(sec[("MDR-VW", 0)], "liability_check", f"Spot was dug under permit #{p1.id} (Gujarat Gas Ltd) — the utility must restore it, "
+       "not the road contractor", c_dug.created_at + timedelta(minutes=2), complaint=c_dug)
+    permit(sec[("SH-VP", 16)], 18.0, 18.05, "Vadodara Municipal Corporation", "Water main crossing the road", -5, -12,
+           "applied", 1.1e5)
+    permit(sec[("SH-VD", 15)], 20.0, 22.0, "BSNL", "Optical fibre cable", 200, 185, "restored", 6.5e5,
+           "Allowed outside the monsoon", restored=180)
     session.flush()
     session.commit()
+    from .org import ensure_hierarchy
+    ensure_hierarchy(session)  # attach every asset to its sub-division

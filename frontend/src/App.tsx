@@ -13,6 +13,9 @@ import Documents from "./pages/Documents";
 import Planner from "./pages/Planner";
 import Contractors from "./pages/Contractors";
 import Settings from "./pages/Settings";
+import Offices from "./pages/Offices";
+import Digging from "./pages/Digging";
+import Performance from "./pages/Performance";
 
 export default function App() {
   return (
@@ -22,6 +25,7 @@ export default function App() {
       <Route path="/report" element={<Report />} />
       <Route path="/track" element={<Track />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/performance" element={<Performance />} />
       {/* Staff (JWT cookie) */}
       <Route path="/app" element={<StaffLayout />}>
         <Route index element={<Navigate to="dashboard" replace />} />
@@ -34,6 +38,8 @@ export default function App() {
         <Route path="planner" element={<Planner />} />
         <Route path="contractors" element={<Contractors />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="offices" element={<Offices />} />
+        <Route path="digging" element={<Digging />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

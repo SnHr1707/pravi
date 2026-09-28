@@ -19,7 +19,9 @@ from .auth import COOKIE, EE, FIELD, STAFF, make_token, require_role, set_auth_c
 from .config import DISTRICT, LLM_MODEL, LLM_PROVIDER, JWT_SECRET_FROM_ENV, RESET_DB_ON_START, SAMPLE_DIR, FRONTEND_DIST, SEED_DEMO
 from .db import engine, get_session, init_db
 from .geo import haversine, snap
-from .models import Asset, Complaint, Document, Event, Inspection, Photo, Setting, User, Work
+from .models import Asset, Complaint, DigPermit, Document, Event, Inspection, Office, Photo, Setting, User, Work
+from .org import (APPROVAL_LIMITS, LEVEL_LABEL, ROLE_LABEL, ROLE_RANK, SENIOR, approver_for, breadcrumb, can_approve,
+                  complaint_sla, ensure_hierarchy, get_scope, office_brief, subdivision_for, subtree_ids, unit_of)
 from .photos import save_photo
 from .planner import plan as budget_plan
 from .rules import (DEFAULT_WEIGHTS, WORK_LABEL, add_months, compute_flags, contractor_scorecard, lakh,
@@ -32,6 +34,8 @@ def _startup():
         with Session(engine) as s:
             if seed_if_empty(s, demo=SEED_DEMO):
                 print("[startup] seeded " + ("demo data" if SEED_DEMO else "login accounts only (SEED_DEMO=false)"))
+            if ensure_hierarchy(s):
+                print("[startup] office hierarchy created / updated")
     except Exception as e:  # e.g. two serverless instances seeding at the same moment
         print(f"[startup] seeding skipped: {type(e).__name__}")
     if not JWT_SECRET_FROM_ENV:
@@ -108,7 +112,10 @@ def complaint_dict(c: Complaint, asset: Optional[Asset] = None) -> dict:
             "condition": c.condition, "verify_notes": c.verify_notes, "fix_notes": c.fix_notes,
             "photo_url": f"/api/photos/{c.photo_id}" if c.photo_id else None,
             "fix_photo_url": f"/api/photos/{c.fix_photo_id}" if c.fix_photo_id else None,
-            "reopened_count": c.reopened_count,
+            "reopened_count": c.reopened_count, "source": c.source, "permit_id": c.permit_id,
+            "fix_distance_m": (round(haversine((c.lat, c.lng), (c.fix_lat, c.fix_lng)))
+                               if c.fix_lat is not None and c.fix_lng is not None else None),
+            "sla": complaint_sla(c),
             "created_at": c.created_at.isoformat(), "verified_at": d_iso(c.verified_at),
             "assigned_at": d_iso(c.assigned_at), "fixed_at": d_iso(c.fixed_at), "closed_at": d_iso(c.closed_at),
             "age_days": (datetime.utcnow() - c.created_at).days}
@@ -147,6 +154,11 @@ def login(request: Request, response: Response, body: dict = Body(...), session:
     return {"username": u.username, "name": u.full_name, "role": u.role, "district": u.district}
 
 
+def _approval_limit(role: str):
+    lim = dict(APPROVAL_LIMITS).get(role)
+    return None if lim is None or lim == float("inf") else lim
+
+
 @app.post("/api/auth/logout")
 def logout(response: Response):
     response.delete_cookie(COOKIE, path="/")
@@ -154,8 +166,15 @@ def logout(response: Response):
 
 
 @app.get("/api/auth/me")
-def me(user=Depends(STAFF)):
-    return {"username": user["username"], "name": user["name"], "role": user["role"], "district": user["district"]}
+def me(request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    sc = get_scope(request, user, session)
+    home_ids = subtree_ids(sc.offices, sc.home.id)
+    switchable = [office_brief(o) for o in sc.offices if o.id in home_ids and o.onboarded]
+    return {"username": user["username"], "name": user["name"], "role": user["role"], "district": user["district"],
+            "role_label": ROLE_LABEL.get(user["role"], user["role"]), "rank": ROLE_RANK.get(user["role"], 0),
+            "home": office_brief(sc.home), "office": office_brief(sc.office), "breadcrumb": breadcrumb(sc.offices, sc.office),
+            "offices": switchable, "approval_limit": _approval_limit(user["role"]),
+            "can_approve_any": user["role"] == "ce"}
 
 
 # ------------------------------------------------------------------ photos
@@ -261,6 +280,9 @@ async def create_complaint(request: Request, lat: float = Form(...), lng: float 
         else liability_windows(ctx, a_ctx)
     if wins:
         c.liable_work_id, c.liable_contractor, c.liable_until = wins[0].id, wins[0].contractor, wins[0].liability_end
+    permit = _permit_at(session, asset, km)
+    if permit:
+        c.permit_id = permit.id
     session.add(c)
     session.flush()
     c.ticket = f"GJ-VAD-{10240 + c.id}"
@@ -268,12 +290,31 @@ async def create_complaint(request: Request, lat: float = Form(...), lng: float 
     where = f"{asset.road_name or asset.road_code} km {km:g}" if asset.road_code and km is not None else asset.name
     add_event(session, asset.id, "complaint_reported", f"Citizen reported {issue_type} at {where} ({c.ticket})",
               actor="Citizen", complaint_id=c.id)
-    if c.liable_contractor:
+    if permit:
+        add_event(session, asset.id, "liability_check",
+                  f"Spot was dug under permit #{permit.id} ({permit.agency}) — the utility must restore it", complaint_id=c.id)
+    elif c.liable_contractor:
         add_event(session, asset.id, "liability_check",
                   f"Under liability: {c.liable_contractor} until {c.liable_until:%d %b %Y}", complaint_id=c.id)
     session.commit()
     return {"ticket": c.ticket, "merged": False, "report_count": 1, "asset": asset.name, "km": km,
-            "liable_contractor": c.liable_contractor, "liable_until": d_iso(c.liable_until)}
+            "liable_contractor": None if permit else c.liable_contractor, "liable_until": d_iso(c.liable_until),
+            "liable_utility": permit.agency if permit else None,
+            "sla_hours": complaint_sla(c)["hours"]}
+
+
+def _permit_at(session: Session, asset: Asset, km: Optional[float], on: Optional[date] = None) -> Optional[DigPermit]:
+    """A utility dug this spot (road + km) recently: it is responsible for restoring it for a year after the digging."""
+    on = on or date.today()
+    if asset.asset_type != "road_section" or km is None:
+        return None
+    for p in session.exec(select(DigPermit).where(DigPermit.road_code == asset.road_code,
+                                                  DigPermit.status.in_(["approved", "restored"]))).all():
+        if p.start_km is None or not (p.start_km - 0.2 <= km <= p.end_km + 0.2):
+            continue
+        if p.from_date <= on <= (p.restored_on or p.to_date) + timedelta(days=365):
+            return p
+    return None
 
 
 @app.get("/api/public/complaints/{ticket}")
@@ -336,9 +377,14 @@ def _flags_by_asset(flags):
     return out
 
 
+def _ctx(request: Request, user: dict, session: Session):
+    sc = get_scope(request, user, session)
+    return sc, load_ctx(session, sc.district, offices=sc.office_ids)
+
+
 @app.get("/api/dashboard")
-def dashboard(user=Depends(STAFF), session: Session = Depends(get_session)):
-    ctx = load_ctx(session, user["district"])
+def dashboard(request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    sc, ctx = _ctx(request, user, session)
     flags = compute_flags(ctx)
     fba = _flags_by_asset(flags)
     rows = [asset_row(ctx, a, fba) for a in ctx.assets.values()]
@@ -356,9 +402,21 @@ def dashboard(user=Depends(STAFF), session: Session = Depends(get_session)):
         if a.asset_type == "road_section":
             for w in liability_windows(ctx, a):
                 liab_km += max(0, min(w.end_km, a.end_km) - max(w.start_km, a.start_km))
+    my_rank = ROLE_RANK.get(user["role"], 0)
+    slas = [complaint_sla(c) for c in comps if c.status in ("open", "verified", "assigned")]
+    pending = [w for w in ctx.works if w.status == "proposed" and w.asset_id in ctx.assets]
     return {
         "district": user["district"],
+        "office": office_brief(sc.office),
         "kpis": {
+            "overdue_complaints": sum(1 for x in slas if x["state"] == "overdue"),
+            "escalated_to_me": sum(1 for x in slas if x["escalation_rank"] and x["escalation_rank"] == my_rank)
+            if my_rank >= 2 else 0,
+            "escalated_above_me": sum(1 for x in slas if x["escalation_rank"] > max(my_rank, 1)),
+            "awaiting_my_approval": sum(1 for w in pending if approver_for(w.estimated_cost) == user["role"]),
+            "awaiting_approval": len(pending),
+            "permits_to_decide": sum(1 for p in ctx.permits if p.status == "applied") if user["role"] in SENIOR else 0,
+            "roads_not_restored": sum(1 for f in flags if f["type"] == "dig_not_restored"),
             "assets": len(ctx.assets), "by_type": by_type, "road_km": road_km,
             "road_km_under_liability": round(liab_km, 1),
             "open_complaints": sum(1 for c in comps if c.status in ("open", "verified", "assigned")),
@@ -372,7 +430,7 @@ def dashboard(user=Depends(STAFF), session: Session = Depends(get_session)):
             "to_assign": sum(1 for c in comps if c.status == "verified"),
             "paid_in_liability": sum(1 for f in flags if f["type"] == "paid_repair_in_liability"),
             "notices_ignored": sum(1 for f in flags if f["type"] == "contractor_non_compliance"),
-            "docs_to_review": len(session.exec(select(Document).where(Document.district == user["district"],
+            "docs_to_review": len(session.exec(select(Document).where(Document.district == sc.district,
                                                                      Document.status == "review")).all()),
             "delayed_works": sum(1 for f in flags if f["type"] == "delayed_work"),
         },
@@ -383,9 +441,9 @@ def dashboard(user=Depends(STAFF), session: Session = Depends(get_session)):
 
 
 @app.get("/api/assets")
-def list_assets(type: Optional[str] = None, q: Optional[str] = None, user=Depends(STAFF),
+def list_assets(request: Request, type: Optional[str] = None, q: Optional[str] = None, user=Depends(STAFF),
                 session: Session = Depends(get_session)):
-    ctx = load_ctx(session, user["district"])
+    sc, ctx = _ctx(request, user, session)
     fba = _flags_by_asset(compute_flags(ctx))
     rows = [asset_row(ctx, a, fba) for a in ctx.assets.values()
             if (not type or a.asset_type == type) and (not q or q.lower() in (a.name + a.code).lower())]
@@ -393,8 +451,8 @@ def list_assets(type: Optional[str] = None, q: Optional[str] = None, user=Depend
 
 
 @app.get("/api/assets/{aid}")
-def asset_detail(aid: int, user=Depends(STAFF), session: Session = Depends(get_session)):
-    ctx = load_ctx(session, user["district"])
+def asset_detail(aid: int, request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    sc, ctx = _ctx(request, user, session)
     a = ctx.assets.get(aid)
     if not a:
         raise HTTPException(404)
@@ -412,12 +470,15 @@ def asset_detail(aid: int, user=Depends(STAFF), session: Session = Depends(get_s
     return {
         "asset": {**asset_brief(a), "attrs": jload(a.attrs), "year_built": a.year_built, "status": a.status,
                   "road_name": a.road_name, "division": a.division, "district": a.district,
+                  "office": breadcrumb(sc.offices, next(o for o in sc.offices if o.id == a.office_id)) if a.office_id else [],
                   "geometry": jload(a.geometry, []) if a.geometry else None},
         "priority": priority(ctx, a),
         "liability": liability_summary(ctx, a),
         "flags": flags,
         "works": [work_dict(w) for w in works],
+        "permits": [permit_dict(p, a) for p in sorted(ctx.permits, key=lambda p: p.from_date, reverse=True) if p.asset_id == aid],
         "inspections": [{"id": i.id, "kind": i.kind, "date": d_iso(i.inspected_on), "condition": i.condition,
+                         "safety_class": i.safety_class,
                          "notes": i.notes, "inspector": i.inspector,
                          "photo_url": f"/api/photos/{i.photo_id}" if i.photo_id else None}
                         for i in ctx.inspections.get(aid, [])],
@@ -432,13 +493,19 @@ def asset_detail(aid: int, user=Depends(STAFF), session: Session = Depends(get_s
 
 
 @app.post("/api/assets/{aid}/inspections")
-async def add_inspection(aid: int, kind: str = Form("inspection"), condition: Optional[int] = Form(None),
+async def add_inspection(aid: int, request: Request, kind: str = Form("inspection"), condition: Optional[int] = Form(None),
                          notes: str = Form(""), inspected_on: Optional[str] = Form(None),
+                         safety_class: Optional[str] = Form(None),
                          photo: Optional[UploadFile] = File(None), user=Depends(FIELD),
                          session: Session = Depends(get_session)):
     a = session.get(Asset, aid)
-    if not a or a.district != user["district"]:
+    if not a or not get_scope(request, user, session).has(a):
         raise HTTPException(404)
+    safety_class = (safety_class or "").upper() or None
+    if safety_class and (kind != "structural_audit" or safety_class not in ("C1", "C2A", "C2B", "C3")):
+        raise HTTPException(400, "Safety class (C1/C2A/C2B/C3) is only for structural audits")
+    if kind == "cleaning" and not (photo and photo.filename):
+        raise HTTPException(400, "Add a photo of the cleaned culvert/drain as proof")
     if kind not in ("inspection", "cleaning", "structural_audit"):
         raise HTTPException(400, "Unknown inspection kind")
     if condition is not None and not 1 <= condition <= 5:
@@ -446,42 +513,60 @@ async def add_inspection(aid: int, kind: str = Form("inspection"), condition: Op
     pid = await save_photo(session, photo)
     day = extraction.to_date(inspected_on) or date.today()
     i = Inspection(asset_id=aid, kind=kind, inspected_on=day, condition=condition, notes=notes,
-                   inspector=user["name"], photo_id=pid)
+                   inspector=user["name"], photo_id=pid, safety_class=safety_class)
     session.add(i)
     label = {"inspection": "Inspection", "cleaning": "Cleaning", "structural_audit": "Structural audit"}[kind]
-    add_event(session, aid, kind, f"{label}: " + (f"condition {condition}/5. " if condition else "") + notes,
+    add_event(session, aid, kind, f"{label}: " + (f"class {safety_class}, " if safety_class else "")
+              + (f"condition {condition}/5. " if condition else "") + notes + (" (photo attached)" if pid else ""),
               actor=user["name"])
     session.commit()
     return {"ok": True, "id": i.id}
 
 
 @app.get("/api/flags")
-def flags(user=Depends(STAFF), session: Session = Depends(get_session)):
-    return compute_flags(load_ctx(session, user["district"]))
+def flags(request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    return compute_flags(_ctx(request, user, session)[1])
 
 
 # ------------------------------------------------------------------ complaints (staff)
 
 @app.get("/api/complaints")
-def list_complaints(status: Optional[str] = None, user=Depends(STAFF), session: Session = Depends(get_session)):
-    q = select(Complaint).where(Complaint.district == user["district"])
+def list_complaints(request: Request, status: Optional[str] = None, user=Depends(STAFF),
+                    session: Session = Depends(get_session)):
+    sc = get_scope(request, user, session)
+    q = select(Complaint).where(Complaint.district == sc.district)
     if status:
         q = q.where(Complaint.status.in_(status.split(",")))
     cs = session.exec(q.order_by(Complaint.created_at.desc())).all()
     assets = {a.id: a for a in session.exec(select(Asset)).all()}
-    return [complaint_dict(c, assets.get(c.asset_id)) for c in cs]
+    permits = {p.id: p for p in session.exec(select(DigPermit)).all()}
+    out = []
+    for c in cs:
+        a = assets.get(c.asset_id)
+        if not sc.has(a):
+            continue
+        d = complaint_dict(c, a)
+        p = permits.get(c.permit_id) if c.permit_id else None
+        d["utility"] = {"permit_id": p.id, "agency": p.agency, "purpose": p.purpose, "to_date": d_iso(p.to_date),
+                        "status": p.status} if p else None
+        d["office"] = next((o.name for o in sc.offices if a and o.id == a.office_id), None)
+        out.append(d)
+    return out
 
 
-def _get_complaint(session, cid, user) -> Complaint:
+def _get_complaint(session, cid, user, request: Request = None) -> Complaint:
     c = session.get(Complaint, cid)
     if not c or c.district != user["district"]:
+        raise HTTPException(404)
+    if request is not None and not get_scope(request, user, session).has(session.get(Asset, c.asset_id)):
         raise HTTPException(404)
     return c
 
 
 @app.post("/api/complaints/{cid}/verify")
-def verify_complaint(cid: int, body: dict = Body(...), user=Depends(FIELD), session: Session = Depends(get_session)):
-    c = _get_complaint(session, cid, user)
+def verify_complaint(cid: int, request: Request, body: dict = Body(...), user=Depends(FIELD),
+                     session: Session = Depends(get_session)):
+    c = _get_complaint(session, cid, user, request)
     if c.status != "open":
         raise HTTPException(400, f"Complaint is already {c.status}")
     now = datetime.utcnow()
@@ -508,18 +593,25 @@ def verify_complaint(cid: int, body: dict = Body(...), user=Depends(FIELD), sess
 
 
 @app.post("/api/complaints/{cid}/assign")
-def assign_complaint(cid: int, body: dict = Body(...), user=Depends(FIELD), session: Session = Depends(get_session)):
-    c = _get_complaint(session, cid, user)
+def assign_complaint(cid: int, request: Request, body: dict = Body(...), user=Depends(FIELD),
+                     session: Session = Depends(get_session)):
+    c = _get_complaint(session, cid, user, request)
     if c.status not in ("verified", "assigned"):
         raise HTTPException(400, "Verify the complaint first")
-    kind = body.get("kind", "contractor" if c.liable_contractor else "department")
+    permit = session.get(DigPermit, c.permit_id) if c.permit_id else None
+    kind = body.get("kind", "utility" if permit else "contractor" if c.liable_contractor else "department")
     if kind == "contractor" and not c.liable_contractor:
         raise HTTPException(400, "No contractor is liable for this spot")
+    if kind == "utility" and not permit:
+        raise HTTPException(400, "No utility dug this spot")
     c.assigned_kind = kind
-    c.assigned_to = c.liable_contractor if kind == "contractor" else (body.get("to") or "Department maintenance gang")
+    c.assigned_to = (c.liable_contractor if kind == "contractor" else permit.agency if kind == "utility"
+                     else (body.get("to") or "Department maintenance gang"))
     c.status, c.assigned_at, c.updated_at = "assigned", datetime.utcnow(), datetime.utcnow()
     msg = (f"Defect notice issued to {c.assigned_to} (liable until {c.liable_until:%d %b %Y}) — ₹0 to department"
-           if kind == "contractor" else f"{c.ticket} assigned to {c.assigned_to}")
+           if kind == "contractor" else
+           f"Restoration notice sent to {c.assigned_to} (road cut under permit #{permit.id}) — ₹0 to department"
+           if kind == "utility" else f"{c.ticket} assigned to {c.assigned_to}")
     add_event(session, c.asset_id, "complaint_assigned", msg, actor=user["name"], complaint_id=c.id)
     session.add(c)
     session.commit()
@@ -527,25 +619,34 @@ def assign_complaint(cid: int, body: dict = Body(...), user=Depends(FIELD), sess
 
 
 @app.post("/api/complaints/{cid}/fix")
-async def fix_complaint(cid: int, notes: str = Form(""), photo: Optional[UploadFile] = File(None),
+async def fix_complaint(cid: int, request: Request, notes: str = Form(""), photo: Optional[UploadFile] = File(None),
+                        lat: Optional[float] = Form(None), lng: Optional[float] = Form(None),
                         user=Depends(FIELD), session: Session = Depends(get_session)):
-    c = _get_complaint(session, cid, user)
+    c = _get_complaint(session, cid, user, request)
     if c.status != "assigned":
         raise HTTPException(400, "Only assigned complaints can be marked fixed")
+    if not (photo and photo.filename):
+        raise HTTPException(400, "Add an 'after' photo of the repair — it is shown to the citizen as proof")
     c.fix_photo_id = await save_photo(session, photo)
+    c.fix_lat, c.fix_lng = lat, lng
     c.fix_notes = notes
     c.status, c.fixed_at, c.updated_at = "fixed", datetime.utcnow(), datetime.utcnow()
+    where = ""
+    if lat is not None and lng is not None:
+        dist = haversine((c.lat, c.lng), (lat, lng))
+        where = f" (photo taken {dist:.0f} m from the reported spot)" if dist < 1000 else \
+            f" — WARNING: photo taken {dist / 1000:.1f} km away from the reported spot"
     add_event(session, c.asset_id, "complaint_fixed",
-              f"{c.ticket} marked fixed by {c.assigned_to}" + (" with photo" if c.fix_photo_id else "")
-              + " — waiting for citizen confirmation", actor=user["name"], complaint_id=c.id)
+              f"{c.ticket} marked fixed by {c.assigned_to} with photo{where} — waiting for citizen confirmation",
+              actor=user["name"], complaint_id=c.id)
     session.add(c)
     session.commit()
     return complaint_dict(c)
 
 
 @app.get("/api/complaints/{cid}/notice", response_class=HTMLResponse)
-def defect_notice(cid: int, user=Depends(STAFF), session: Session = Depends(get_session)):
-    c = _get_complaint(session, cid, user)
+def defect_notice(cid: int, request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    c = _get_complaint(session, cid, user, request)
     if not c.liable_contractor:
         raise HTTPException(400, "No contractor liability for this complaint")
     a = session.get(Asset, c.asset_id)
@@ -581,13 +682,14 @@ recover the amount from your security deposit / dues.</p>
 # ------------------------------------------------------------------ works
 
 @app.get("/api/works")
-def list_works(status: Optional[str] = None, user=Depends(STAFF), session: Session = Depends(get_session)):
-    q = select(Work).where(Work.district == user["district"])
+def list_works(request: Request, status: Optional[str] = None, user=Depends(STAFF),
+               session: Session = Depends(get_session)):
+    sc, ctx = _ctx(request, user, session)
+    q = select(Work).where(Work.district == sc.district)
     if status:
         q = q.where(Work.status.in_(status.split(",")))
-    ws = session.exec(q).all()
-    assets = {a.id: a for a in session.exec(select(Asset)).all()}
-    ctx = load_ctx(session, user["district"])
+    ws = [w for w in session.exec(q).all() if w.asset_id in ctx.assets]
+    assets = ctx.assets
     flagged = defaultdict(list)
     for f in compute_flags(ctx):
         if f["work_id"]:
@@ -598,6 +700,10 @@ def list_works(status: Optional[str] = None, user=Depends(STAFF), session: Sessi
         d["asset_name"] = assets[w.asset_id].name if w.asset_id in assets else None
         d["asset_code"] = assets[w.asset_id].code if w.asset_id in assets else None
         d["flags"] = flagged.get(w.id, [])
+        ap = approver_for(w.estimated_cost)
+        d["approver"] = ap
+        d["approver_label"] = ROLE_LABEL[ap]
+        d["can_approve"] = can_approve(user["role"], w.estimated_cost)
         out.append(d)
     order = {s: i for i, s in enumerate(STATUS_ORDER + ["cancelled"])}
     return sorted(out, key=lambda d: (order.get(d["status"], 9), d["proposed_on"] or ""))
@@ -617,9 +723,9 @@ def _liability_warning(session, asset: Asset, k0, k1, on: date, exclude_id=None)
 
 
 @app.post("/api/works")
-def propose_work(body: dict = Body(...), user=Depends(FIELD), session: Session = Depends(get_session)):
+def propose_work(request: Request, body: dict = Body(...), user=Depends(FIELD), session: Session = Depends(get_session)):
     a = session.get(Asset, int(body.get("asset_id") or 0))
-    if not a or a.district != user["district"]:
+    if not a or not get_scope(request, user, session).has(a):
         raise HTTPException(400, "Pick an asset")
     wt = body.get("work_type")
     if wt not in WORK_LABEL:
@@ -642,8 +748,9 @@ def propose_work(body: dict = Body(...), user=Depends(FIELD), session: Session =
              district=user["district"])
     session.add(w)
     session.flush()
-    add_event(session, a.id, "work_proposed", f"Proposed: {w.title}" + (f" — {w.reason}" if w.reason else ""),
-              actor=user["name"], work_id=w.id)
+    ap = approver_for(w.estimated_cost)
+    add_event(session, a.id, "work_proposed", f"Proposed: {w.title}" + (f" — {w.reason}" if w.reason else "")
+              + f". Goes to the {ROLE_LABEL[ap]} for approval ({lakh(w.estimated_cost)})", actor=user["name"], work_id=w.id)
     warn = _liability_warning(session, a, k0, k1, date.today(), exclude_id=w.id) if wt in \
         {"repair", "recarpet", "rehab", "waterproofing", "structural_repair", "widening"} else None
     if warn:
@@ -653,15 +760,16 @@ def propose_work(body: dict = Body(...), user=Depends(FIELD), session: Session =
 
 
 @app.post("/api/works/{wid}/advance")
-def advance_work(wid: int, body: dict = Body(...), user=Depends(FIELD), session: Session = Depends(get_session)):
+def advance_work(wid: int, request: Request, body: dict = Body(...), user=Depends(FIELD),
+                 session: Session = Depends(get_session)):
     w = session.get(Work, wid)
-    if not w or w.district != user["district"]:
+    if not w or not get_scope(request, user, session).has(session.get(Asset, w.asset_id)):
         raise HTTPException(404)
     to = body.get("to")
     today = extraction.to_date(body.get("date")) or date.today()
     if to == "cancelled":
-        if user["role"] != "ee":
-            raise HTTPException(403, "Only the Executive Engineer can cancel works")
+        if user["role"] not in SENIOR:
+            raise HTTPException(403, "Only the Executive Engineer or above can cancel works")
         if w.status == "completed":
             raise HTTPException(400, "Completed works cannot be cancelled")
         w.status = "cancelled"
@@ -674,14 +782,18 @@ def advance_work(wid: int, body: dict = Body(...), user=Depends(FIELD), session:
         raise HTTPException(400, "Invalid status change")
     if STATUS_ORDER.index(to) != STATUS_ORDER.index(w.status) + 1:
         raise HTTPException(400, f"Next step after '{w.status}' is '{STATUS_ORDER[STATUS_ORDER.index(w.status) + 1]}'")
-    if to == "sanctioned" and user["role"] != "ee":
-        raise HTTPException(403, "Only the Executive Engineer can sanction works")
+    if to == "sanctioned":
+        cost = float(body["estimated_cost"]) if body.get("estimated_cost") else w.estimated_cost
+        if not can_approve(user["role"], cost):
+            ap = approver_for(cost)
+            raise HTTPException(403, f"A {lakh(cost)} work needs approval from the {ROLE_LABEL[ap]} "
+                                     f"(your limit is {lakh(_approval_limit(user['role']) or 0)}).")
     msg = ""
     if to == "sanctioned":
         w.sanctioned_on = today
         if body.get("estimated_cost"):
             w.estimated_cost = float(body["estimated_cost"])
-        msg = f"Sanctioned by {user['name']} (est. {lakh(w.estimated_cost)})"
+        msg = f"Approved by {user['name']} (technical sanction, est. {lakh(w.estimated_cost)})"
     elif to == "tendered":
         w.tendered_on = today
         w.tender_id = body.get("tender_id") or w.tender_id or f"RNB/VAD/{today.year}/{wid:04d}"
@@ -871,6 +983,8 @@ def _new_asset_from_doc(session: Session, f: dict, user: dict) -> Asset:
                                 "scheme": f.get("scheme"), "location": ("approximate straight line between the two places" if line else
                                               "approximate (taluka centre)" if pos else "not mapped yet")}.items() if v}),
               district=user["district"], taluka=f.get("taluka"), status="proposed")
+    u = session.get(User, int(user["sub"])) if str(user.get("sub", "")).isdigit() else None
+    a.office_id = subdivision_for(session, f.get("taluka"), u.office_id if u else None).id
     session.add(a)
     session.flush()
     first = min([d for d in (extraction.to_date(f.get(k)) for k in ("sanction_date", "tender_date", "award_date", "completion_date")) if d] or [date.today()])
@@ -1154,19 +1268,250 @@ def reject_document(did: int, user=Depends(FIELD), session: Session = Depends(ge
     return {"ok": True}
 
 
+# ------------------------------------------------------------------ hierarchy (offices)
+
+def _unit_stats(ctx, asset_ids, flags, today) -> dict:
+    assets = [ctx.assets[i] for i in asset_ids]
+    comps = [c for i in asset_ids for c in ctx.complaints.get(i, [])]
+    active = [c for c in comps if c.status in ("open", "verified", "assigned")]
+    slas = [complaint_sla(c) for c in active]
+    cutoff = datetime.utcnow() - timedelta(days=90)
+    done = [c for c in comps if c.fixed_at and c.created_at >= cutoff]
+    met = sum(1 for c in done if complaint_sla(c)["state"] == "met")
+    culverts = [a for a in assets if a.asset_type == "culvert"]
+    cleaned = sum(1 for a in culverts if not any(f["type"] == "missed_monsoon_cleaning" and f["asset_id"] == a.id for f in flags))
+    fl = [f for f in flags if f["asset_id"] in asset_ids]
+    ranks = [priority(ctx, a) for a in assets]
+    return {
+        "assets": len(assets),
+        "road_km": round(sum((a.end_km - a.start_km) for a in assets if a.asset_type == "road_section"), 1),
+        "urgent": sum(1 for r in ranks if r["band"] in ("Urgent", "This week")),
+        "red_flags": sum(1 for f in fl if f["severity"] == "red"),
+        "open_complaints": len(active),
+        "overdue_complaints": sum(1 for x in slas if x["state"] == "overdue"),
+        "escalated": sum(1 for x in slas if x["escalation_rank"] >= 3),
+        "fixed_90d": len(done),
+        "within_deadline_pct": round(100 * met / len(done)) if done else None,
+        "money_at_risk": sum(f["amount"] or 0 for f in fl if f["type"] == "paid_repair_in_liability"),
+        "culverts_cleaned": cleaned, "culverts": len(culverts),
+        "awaiting_approval": sum(1 for w in ctx.works if w.status == "proposed" and w.asset_id in asset_ids),
+        "roads_not_restored": sum(1 for f in fl if f["type"] == "dig_not_restored"),
+    }
+
+
+@app.get("/api/offices")
+def offices_view(request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    """The unit being viewed, its chain of command, and a league table of the units directly under it."""
+    sc, ctx = _ctx(request, user, session)
+    flags = compute_flags(ctx)
+    kids = [o for o in sc.offices if o.parent_id == sc.office.id]
+    groups = defaultdict(list)
+    for a in ctx.assets.values():
+        u = a.office_id if a.office_id == sc.office.id else unit_of(sc.offices, a.office_id, sc.office.id)
+        groups[u].append(a.id)
+    rows = []
+    for o in kids:
+        rows.append({**office_brief(o), "stats": _unit_stats(ctx, groups.get(o.id, []), flags, ctx.today) if o.onboarded else None})
+    officers = session.exec(select(User)).all()
+    by_office = defaultdict(list)
+    for u in officers:
+        if u.role == "auditor":
+            continue
+        by_office[u.office_id].append({"name": u.full_name.split(" (")[0], "role": ROLE_LABEL.get(u.role, u.role)})
+    for r in rows:
+        r["officers"] = by_office.get(r["id"], [])
+    return {"office": office_brief(sc.office), "breadcrumb": breadcrumb(sc.offices, sc.office),
+            "officers": by_office.get(sc.office.id, []),
+            "total": _unit_stats(ctx, list(ctx.assets), flags, ctx.today),
+            "units": rows, "child_level": LEVEL_LABEL[kids[0].level] if kids else None,
+            "approval_limits": [{"role": r, "label": ROLE_LABEL[r], "limit": None if l == float("inf") else l}
+                                for r, l in APPROVAL_LIMITS]}
+
+
+# ------------------------------------------------------------------ road-digging permits (utilities)
+
+def permit_dict(p: DigPermit, a: Optional[Asset] = None) -> dict:
+    today = date.today()
+    return {"id": p.id, "asset_id": p.asset_id, "asset_name": a.name if a else None, "road_code": p.road_code,
+            "start_km": p.start_km, "end_km": p.end_km, "agency": p.agency, "purpose": p.purpose,
+            "length_m": p.length_m, "from_date": d_iso(p.from_date), "to_date": d_iso(p.to_date),
+            "emergency": p.emergency, "status": p.status, "restoration_charge": p.restoration_charge,
+            "decision_note": p.decision_note, "decided_by": p.decided_by, "restored_on": d_iso(p.restored_on),
+            "created_by": p.created_by, "created_at": p.created_at.isoformat(),
+            "overdue_days": (today - p.to_date).days if p.status == "approved" and p.to_date < today else 0,
+            "utility_liable_until": d_iso((p.restored_on or p.to_date) + timedelta(days=365))
+            if p.status in ("approved", "restored") else None}
+
+
+RESTORATION_RATE_PER_M = {"SH": 3200, "MDR": 2600, "ODR": 2000, "VR": 1500}  # illustrative ₹ per running metre
+
+
+def _dig_check(session, asset: Asset, k0, k1, start: date, end: date, emergency: bool) -> dict:
+    """Rules for cutting a road (inspired by Mumbai's trenching policy)."""
+    ctx = load_ctx(session, asset.district)
+    a = ctx.assets[asset.id]
+    wins = liability_windows(ctx, a, k0, k1, on=start)
+    blocked, notes = None, []
+    if wins:
+        w = wins[0]
+        months_old = (start - w.completed_on).days / 30.4
+        if months_old < 12 and not emergency:
+            blocked = (f"Not allowed: this stretch was built/renewed by {w.contractor} only {months_old:.0f} months ago "
+                       f"(first year of the guarantee). Only emergency digging can be allowed.")
+        else:
+            notes.append(f"Road is under {w.contractor}'s guarantee until {w.liability_end:%d %b %Y}. The contractor is not "
+                         f"responsible for damage from this cutting — the utility must restore it and is liable for 1 year.")
+    monsoon = any(start <= date(y, 9, 30) and end >= date(y, 6, 1) for y in range(start.year, end.year + 1))
+    if monsoon and not emergency and not blocked:
+        blocked = "Not allowed during the monsoon (1 June – 30 September) except for emergencies."
+    busy = [p for p in ctx.permits if p.asset_id == asset.id and p.status in ("applied", "approved")
+            and p.start_km is not None and k0 is not None and max(p.start_km, k0) < min(p.end_km, k1) + 0.3
+            and p.from_date <= end and p.to_date >= start]
+    if busy:
+        notes.append(f"{busy[0].agency} is also digging here (permit #{busy[0].id}) — ask both to use one trench.")
+    return {"blocked": blocked, "notes": notes, "liable_contractor": wins[0].contractor if wins else None}
+
+
+@app.get("/api/permits")
+def list_permits(request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    sc, ctx = _ctx(request, user, session)
+    order = {"applied": 0, "approved": 1, "restored": 2, "rejected": 3}
+    ps = sorted(ctx.permits, key=lambda p: (order.get(p.status, 9), -(p.id or 0)))
+    return [permit_dict(p, ctx.assets.get(p.asset_id)) for p in ps]
+
+
+@app.post("/api/permits/check")
+def check_permit(request: Request, body: dict = Body(...), user=Depends(FIELD), session: Session = Depends(get_session)):
+    a, k0, k1, start, end, emergency = _permit_input(request, body, user, session)
+    res = _dig_check(session, a, k0, k1, start, end, emergency)
+    res["restoration_charge"] = _restoration_charge(a, k0, k1, body)
+    return res
+
+
+def _restoration_charge(a: Asset, k0, k1, body) -> float:
+    length = float(body.get("length_m") or ((k1 - k0) * 1000 if k0 is not None else 50))
+    return round(length * RESTORATION_RATE_PER_M.get(a.category, 2000), -2)
+
+
+def _permit_input(request, body, user, session):
+    a = session.get(Asset, int(body.get("asset_id") or 0))
+    if not a or not get_scope(request, user, session).has(a) or a.asset_type != "road_section":
+        raise HTTPException(400, "Pick a road section")
+    try:
+        k0 = float(body.get("start_km")) if body.get("start_km") not in (None, "") else a.start_km
+        k1 = float(body.get("end_km")) if body.get("end_km") not in (None, "") else k0 + 0.1
+    except ValueError:
+        raise HTTPException(400, "Km must be a number")
+    if not (a.start_km <= k0 <= k1 <= a.end_km):
+        raise HTTPException(400, f"Km must be within this section ({a.start_km:g}–{a.end_km:g})")
+    start = extraction.to_date(body.get("from_date"))
+    end = extraction.to_date(body.get("to_date"))
+    if not start or not end or end < start:
+        raise HTTPException(400, "Give the digging dates (from ≤ to)")
+    if not (body.get("agency") or "").strip():
+        raise HTTPException(400, "Which agency will dig?")
+    return a, k0, k1, start, end, bool(body.get("emergency"))
+
+
+@app.post("/api/permits")
+def create_permit(request: Request, body: dict = Body(...), user=Depends(FIELD), session: Session = Depends(get_session)):
+    a, k0, k1, start, end, emergency = _permit_input(request, body, user, session)
+    chk = _dig_check(session, a, k0, k1, start, end, emergency)
+    p = DigPermit(asset_id=a.id, road_code=a.road_code, start_km=k0, end_km=k1, agency=body["agency"].strip()[:120],
+                  purpose=(body.get("purpose") or "")[:300], length_m=float(body.get("length_m") or (k1 - k0) * 1000 or 50),
+                  from_date=start, to_date=end, emergency=emergency, status="applied",
+                  restoration_charge=_restoration_charge(a, k0, k1, body), created_by=user["name"], district=a.district)
+    session.add(p)
+    session.flush()
+    add_event(session, a.id, "dig_applied", f"Road-cutting permit #{p.id} requested by {p.agency}: {p.purpose or 'utility work'}, "
+              f"km {k0:g}–{k1:g}, {start:%d %b} to {end:%d %b %Y}" + (" (EMERGENCY)" if emergency else ""), actor=user["name"])
+    session.commit()
+    return {"permit": permit_dict(p, a), "check": chk}
+
+
+@app.post("/api/permits/{pid}/decide")
+def decide_permit(pid: int, request: Request, body: dict = Body(...), user=Depends(EE), session: Session = Depends(get_session)):
+    p = session.get(DigPermit, pid)
+    a = session.get(Asset, p.asset_id) if p else None
+    if not p or not get_scope(request, user, session).has(a):
+        raise HTTPException(404)
+    action = body.get("action")
+    if action in ("approve", "reject") and p.status != "applied":
+        raise HTTPException(400, f"Permit is already {p.status}")
+    if action == "approve":
+        chk = _dig_check(session, a, p.start_km, p.end_km, p.from_date, p.to_date, p.emergency)
+        if chk["blocked"]:
+            raise HTTPException(400, chk["blocked"])
+        p.status = "approved"
+        p.decision_note = body.get("note") or " ".join(chk["notes"]) or "Approved"
+        msg = f"Permit #{p.id} approved for {p.agency}; restoration charge {lakh(p.restoration_charge)}. {p.decision_note}"
+    elif action == "reject":
+        p.status = "rejected"
+        p.decision_note = body.get("note") or "Rejected"
+        msg = f"Permit #{p.id} rejected: {p.decision_note}"
+    elif action == "restored":
+        if p.status != "approved":
+            raise HTTPException(400, "Only approved permits can be marked restored")
+        p.status, p.restored_on = "restored", extraction.to_date(body.get("date")) or date.today()
+        msg = f"Road restored by {p.agency} after permit #{p.id}. {p.agency} is liable for defects here until " \
+              f"{p.restored_on + timedelta(days=365):%d %b %Y}"
+    else:
+        raise HTTPException(400, "Unknown action")
+    p.decided_by = user["name"]
+    add_event(session, a.id, "dig_" + ("approved" if action == "approve" else action if action == "restored" else "rejected"),
+              msg, actor=user["name"])
+    session.add(p)
+    session.commit()
+    return permit_dict(p, a)
+
+
+# ------------------------------------------------------------------ public performance (transparency)
+
+@app.get("/api/public/performance")
+def public_performance(session: Session = Depends(get_session)):
+    """How each sub-division is doing — published for citizens, like Mumbai publishes ward-wise progress."""
+    offices = session.exec(select(Office)).all()
+    ctx = load_ctx(session, DISTRICT)
+    flags = compute_flags(ctx)
+    groups = defaultdict(list)
+    for a in ctx.assets.values():
+        groups[a.office_id].append(a.id)
+    rows = []
+    for o in offices:
+        if o.level != "subdivision" or not o.onboarded:
+            continue
+        st = _unit_stats(ctx, groups.get(o.id, []), flags, ctx.today)
+        comps = [c for i in groups.get(o.id, []) for c in ctx.complaints.get(i, [])]
+        fixed = [c for c in comps if c.fixed_at]
+        days = sorted((c.fixed_at - c.created_at).total_seconds() / 86400 for c in fixed)
+        bridges = [ctx.assets[i] for i in groups.get(o.id, []) if ctx.assets[i].asset_type == "bridge"]
+        rows.append({"name": o.name, "talukas": [t for t in o.talukas.split(",") if t],
+                     "road_km": st["road_km"], "complaints_open": st["open_complaints"],
+                     "complaints_overdue": st["overdue_complaints"], "fixed_90d": st["fixed_90d"],
+                     "within_deadline_pct": st["within_deadline_pct"],
+                     "median_days_to_fix": round(days[len(days) // 2], 1) if days else None,
+                     "culverts_cleaned": st["culverts_cleaned"], "culverts": st["culverts"],
+                     "bridges": len(bridges),
+                     "bridges_inspected": sum(1 for b in bridges if not any(f["type"] == "inspection_overdue" and f["asset_id"] == b.id for f in flags)),
+                     "roads_not_restored": st["roads_not_restored"]})
+    return {"district": DISTRICT, "as_of": date.today().isoformat(), "subdivisions": rows,
+            "sla": {"pothole": "48 h (24 h in monsoon)", "waterlogging": "48 h (24 h in monsoon)",
+                    "railing": "24 h", "other": "7 days"}}
+
+
 # ------------------------------------------------------------------ analysis
 
 @app.get("/api/contractors")
-def contractors(user=Depends(STAFF), session: Session = Depends(get_session)):
-    return contractor_scorecard(load_ctx(session, user["district"]))
+def contractors(request: Request, user=Depends(STAFF), session: Session = Depends(get_session)):
+    return contractor_scorecard(_ctx(request, user, session)[1])
 
 
 @app.get("/api/planner")
-def planner(budget_cr: float = 10.0, rural_share: float = 25, user=Depends(require_role("ee", "auditor")),
-            session: Session = Depends(get_session)):
+def planner(request: Request, budget_cr: float = 10.0, rural_share: float = 25,
+            user=Depends(require_role("ee", "se", "ce", "auditor")), session: Session = Depends(get_session)):
     if budget_cr <= 0 or budget_cr > 10000:
         raise HTTPException(400, "Budget must be between 0 and 10,000 crore")
-    return budget_plan(load_ctx(session, user["district"]), budget_cr * 1e7, max(0.0, min(100.0, rural_share)) / 100)
+    return budget_plan(_ctx(request, user, session)[1], budget_cr * 1e7, max(0.0, min(100.0, rural_share)) / 100)
 
 
 @app.get("/api/settings/weights")

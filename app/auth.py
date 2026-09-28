@@ -8,7 +8,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from .config import JWT_HOURS, JWT_SECRET
 
 COOKIE = "pravi_token"
-ROLES = {"engineer", "ee", "auditor"}
+ROLES = {"engineer", "ee", "se", "ce", "auditor"}
 
 
 def hash_password(pw: str) -> str:
@@ -60,6 +60,6 @@ def require_role(*roles):
     return check
 
 
-STAFF = require_role("engineer", "ee", "auditor")
-FIELD = require_role("engineer", "ee")
-EE = require_role("ee")
+STAFF = require_role("engineer", "ee", "se", "ce", "auditor")
+FIELD = require_role("engineer", "ee", "se", "ce")    # can act on complaints, documents, works
+EE = require_role("ee", "se", "ce")                   # Executive Engineer and above

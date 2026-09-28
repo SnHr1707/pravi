@@ -11,13 +11,27 @@ def now() -> datetime:
     return datetime.utcnow()
 
 
+class Office(SQLModel, table=True):
+    """One unit of the R&B hierarchy: department > wing (Chief Engineer) > circle (Superintending Engineer)
+    > division (Executive Engineer) > sub-division (Deputy Executive Engineer)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, unique=True)
+    name: str
+    level: str  # department | wing | circle | division | subdivision
+    head: str  # designation of the officer in charge
+    parent_id: Optional[int] = Field(default=None, index=True)
+    talukas: str = ""  # comma separated, for sub-divisions
+    onboarded: bool = True  # False = shown in the tree but not on Pravi yet
+
+
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
     password_hash: str
     full_name: str
-    role: str  # engineer | ee | auditor
+    role: str  # engineer (Deputy EE / AAE) | ee | se | ce | auditor
     district: str = "Vadodara"
+    office_id: Optional[int] = Field(default=None, index=True)
 
 
 class Asset(SQLModel, table=True):
@@ -39,6 +53,7 @@ class Asset(SQLModel, table=True):
     district: str = Field(default="Vadodara", index=True)
     division: str = "Vadodara (R&B)"
     taluka: Optional[str] = None
+    office_id: Optional[int] = Field(default=None, index=True)  # the sub-division that maintains it
     status: str = "in_service"  # proposed | under_construction | in_service | closed
     created_at: NaiveDatetime = Field(default_factory=now)
 
@@ -100,6 +115,7 @@ class Inspection(SQLModel, table=True):
     notes: Optional[str] = Field(default=None, sa_column=Column(Text))
     inspector: Optional[str] = None
     photo_id: Optional[int] = None
+    safety_class: Optional[str] = None  # structural audits: C1 | C2A | C2B | C3 (Mumbai-style classification)
 
 
 class Complaint(SQLModel, table=True):
@@ -126,6 +142,10 @@ class Complaint(SQLModel, table=True):
     verify_notes: Optional[str] = Field(default=None, sa_column=Column(Text))
     fix_notes: Optional[str] = Field(default=None, sa_column=Column(Text))
     fix_photo_id: Optional[int] = None
+    fix_lat: Optional[float] = None
+    fix_lng: Optional[float] = None
+    permit_id: Optional[int] = None  # road was dug under this permit -> the utility must restore it
+    source: str = "citizen"  # citizen | patrol
     reopened_count: int = 0
     created_at: NaiveDatetime = Field(default_factory=now)
     updated_at: NaiveDatetime = Field(default_factory=now)
@@ -133,6 +153,29 @@ class Complaint(SQLModel, table=True):
     assigned_at: Optional[NaiveDatetime] = None
     fixed_at: Optional[NaiveDatetime] = None
     closed_at: Optional[NaiveDatetime] = None
+    district: str = Field(default="Vadodara", index=True)
+
+
+class DigPermit(SQLModel, table=True):
+    """Permission for a utility (gas, water, power, telecom) to cut a road. Idea taken from Mumbai's trenching policy."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    asset_id: int = Field(foreign_key="asset.id", index=True)
+    road_code: Optional[str] = Field(default=None, index=True)
+    start_km: Optional[float] = None
+    end_km: Optional[float] = None
+    agency: str
+    purpose: str = ""
+    length_m: Optional[float] = None
+    from_date: date
+    to_date: date
+    emergency: bool = False
+    status: str = Field(default="applied", index=True)  # applied | approved | rejected | restored
+    restoration_charge: Optional[float] = None
+    decision_note: Optional[str] = Field(default=None, sa_column=Column(Text))
+    decided_by: Optional[str] = None
+    restored_on: Optional[date] = None
+    created_by: Optional[str] = None
+    created_at: NaiveDatetime = Field(default_factory=now)
     district: str = Field(default="Vadodara", index=True)
 
 

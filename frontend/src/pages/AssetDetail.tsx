@@ -4,7 +4,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleMarker, Popup } from "react-leaflet";
 import { Plus } from "lucide-react";
 import { api, postForm } from "../lib/api";
-import type { AssetType, Complaint, Flag, Liability, Priority, Work } from "../lib/types";
+import { compressImage } from "../lib/image";
+import { FIELD_ROLES, type AssetType, type Complaint, type Flag, type Liability, type Permit, type Priority, type Work } from "../lib/types";
 import { BAND_COLOR, STATUS_LABEL, TYPE_LABEL, daysAgo, fdate, fdt, inr } from "../lib/format";
 import { AssetShape, BaseMap, FitBounds } from "../components/AssetMap";
 import { Badge, BandBadge, ComplaintStatus, ErrorBox, FlagCard, Loading, Modal, ScoreBox, useToast } from "../components/ui";
@@ -13,9 +14,11 @@ import { Can } from "../components/StaffLayout";
 interface Detail {
   asset: { id: number; code: string; type: AssetType; name: string; category: string; road_code: string | null; road_name: string | null;
     start_km: number | null; end_km: number | null; chainage_km: number | null; lat: number | null; lng: number | null; taluka: string | null;
-    attrs: Record<string, any>; year_built: number | null; division: string; geometry: [number, number][] | null };
+    attrs: Record<string, any>; year_built: number | null; division: string; geometry: [number, number][] | null;
+    office?: { id: number; name: string; level: string; head: string }[] };
+  permits: Permit[];
   priority: Priority; liability: Liability; flags: Flag[]; works: Work[]; complaints: Complaint[];
-  inspections: { id: number; kind: string; date: string; condition: number | null; notes: string | null; inspector: string | null; photo_url: string | null }[];
+  inspections: { id: number; kind: string; date: string; condition: number | null; notes: string | null; inspector: string | null; photo_url: string | null; safety_class?: string | null }[];
   documents: { id: number; doc_type: string; filename: string; method: string; has_file: boolean; created_at: string }[];
   timeline: { type: string; message: string; actor: string; at: string }[];
 }
@@ -26,6 +29,7 @@ const ET_COLOR: Record<string, string> = {
   complaint_verified: "#2563eb", complaint_assigned: "#7c3aed", complaint_fixed: "#16a34a", complaint_closed: "#15803d",
   complaint_reopened: "#dc2626", complaint_rejected: "#64748b", liability_check: "#1f5fbf", liability_warning: "#dc2626",
   inspection: "#0f766e", cleaning: "#0f766e", structural_audit: "#0f766e", registered: "#334155",
+  dig_applied: "#a16207", dig_approved: "#a16207", dig_rejected: "#64748b", dig_restored: "#16a34a",
 };
 const FACTOR_LABEL: Record<string, string> = { condition: "Condition", criticality: "Criticality", complaints: "Complaints (90 d)", age: "Age since renewal", repeat: "Repeat repairs" };
 
@@ -48,9 +52,11 @@ export default function AssetDetail() {
           <h1>{a.name}</h1>
           <div className="flex gap-1 flex-wrap">
             <Badge tone="dark">{TYPE_LABEL[a.type]}</Badge>{a.taluka && <Badge>Taluka {a.taluka}</Badge>}
+            {a.office && a.office.length > 0 && <Badge tone="blue" title={a.office.map((o) => o.name).join(" › ")}>Maintained by {a.office[a.office.length - 1].name}</Badge>}
+            {p.inputs.safety_class && <Badge tone={["C1", "C2A"].includes(p.inputs.safety_class) ? "red" : p.inputs.safety_class === "C2B" ? "amber" : "green"}>Structural class {p.inputs.safety_class}</Badge>}
           </div>
         </div>
-        <Can roles={["engineer", "ee"]}>
+        <Can roles={FIELD_ROLES}>
           <div className="flex gap-2">
             <button onClick={() => setInspOpen(true)}><Plus size={15} />Log inspection</button>
             <Link className="btn btn-primary" to={`/app/works?propose=${a.id}`}>Propose repair / work</Link>
@@ -122,7 +128,8 @@ export default function AssetDetail() {
 
       <div className="ptabs">
         {([["history", "History", d.timeline.length], ["works", "Works & contracts", d.works.length], ["complaints", "Complaints", d.complaints.length],
-          ["inspections", "Inspections", d.inspections.length], ["documents", "Documents", d.documents.length], ["details", "Details", 0]] as const).map(([k, l, n]) => (
+          ["inspections", "Inspections", d.inspections.length], ["documents", "Documents", d.documents.length],
+          ...(a.type === "road_section" ? [["digging", "Road digging", d.permits.length] as const] : []), ["details", "Details", 0]] as const).map(([k, l, n]) => (
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}{n ? <span className="badge">{n}</span> : null}</button>
         ))}
       </div>
@@ -156,7 +163,7 @@ export default function AssetDetail() {
         {tab === "inspections" && (d.inspections.length ? (
           <table><thead><tr><th>Date</th><th>Type</th><th>Condition</th><th>Notes</th></tr></thead><tbody>
             {d.inspections.map((i) => (
-              <tr key={i.id}><td className="whitespace-nowrap">{fdate(i.date)}</td><td>{i.kind.replace("_", " ")}</td><td>{i.condition ? `${i.condition}/5` : "—"}</td>
+              <tr key={i.id}><td className="whitespace-nowrap">{fdate(i.date)}</td><td>{i.kind.replace("_", " ")}{i.safety_class && <> · <b>{i.safety_class}</b></>}</td><td>{i.condition ? `${i.condition}/5` : "—"}</td>
                 <td className="small">{i.notes} <span className="muted">{i.inspector}</span>{i.photo_url && <> <a href={i.photo_url} target="_blank">photo</a></>}</td></tr>
             ))}
           </tbody></table>
@@ -167,11 +174,17 @@ export default function AssetDetail() {
             <span className="small muted"> · {fdate(doc.created_at)}</span>
           </div></div>
         )) : <p className="muted">No documents yet.</p>)}
+        {tab === "digging" && (d.permits.length ? d.permits.map((pm) => (
+          <div className="li-row" key={pm.id}><div className="flex-1">
+            <b>{pm.agency}</b> — {pm.purpose} <Badge tone={pm.status === "restored" ? "green" : pm.status === "rejected" ? "" : pm.overdue_days ? "red" : "amber"}>{pm.status === "approved" && pm.overdue_days ? "Not restored" : pm.status}</Badge>
+            <div className="small muted">Permit #{pm.id} · km {pm.start_km}–{pm.end_km} · {fdate(pm.from_date)} to {fdate(pm.to_date)}{pm.utility_liable_until ? ` · utility liable until ${fdate(pm.utility_liable_until)}` : ""}</div>
+          </div></div>
+        )) : <p className="muted">No utility has dug this road. <Link to="/app/digging">Road-digging permits →</Link></p>)}
         {tab === "details" && (
           <div className="kv">
             <div>Asset code</div><div>{a.code}</div>
             {a.road_code && <><div>Road</div><div>{a.road_code} · {a.road_name}</div></>}
-            <div>Division</div><div>{a.division}</div>
+            <div>Maintained by</div><div>{a.office && a.office.length ? a.office.slice(1).map((o) => o.name).join(" › ") : a.division}</div>
             {Object.entries(a.attrs || {}).map(([k, v]) => <Attr key={k} k={k} v={v} />)}
           </div>
         )}
@@ -187,33 +200,47 @@ function InspectionModal({ assetId, code, type, onClose }: { assetId: number; co
   const qc = useQueryClient();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const [kind, setKind] = useState("inspection");
+  const [err, setErr] = useState("");
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     if (!fd.get("condition")) fd.delete("condition");
+    if (!fd.get("safety_class")) fd.delete("safety_class");
     const ph = fd.get("photo") as File | null;
     if (!ph || !ph.name) fd.delete("photo");
-    setBusy(true);
+    else fd.set("photo", await compressImage(ph), "photo.jpg");
+    setBusy(true); setErr("");
     try {
       await postForm(`/api/assets/${assetId}/inspections`, fd);
       toast("Inspection saved");
       qc.invalidateQueries();
       onClose();
-    } finally { setBusy(false); }
+    } catch (x: any) { setErr(x.message); } finally { setBusy(false); }
   };
   return (
     <Modal title={`Log inspection — ${code}`} onClose={onClose}>
       <form onSubmit={submit}>
         <div className="row">
-          <div><label>Type</label><select name="kind">
+          <div><label>Type</label><select name="kind" value={kind} onChange={(e) => setKind(e.target.value)}>
             <option value="inspection">Inspection</option>
-            {type === "culvert" && <option value="cleaning">Cleaning</option>}
-            {type === "building" && <option value="structural_audit">Structural audit</option>}
+            {type === "culvert" && <option value="cleaning">Pre-monsoon cleaning (desilting)</option>}
+            {(type === "building" || type === "bridge") && <option value="structural_audit">Structural audit</option>}
           </select></div>
           <div><label>Condition (1 very poor – 5 good)</label><select name="condition"><option value="">—</option>{[5, 4, 3, 2, 1].map((n) => <option key={n}>{n}</option>)}</select></div>
         </div>
+        {kind === "structural_audit" && <>
+          <label>Safety class (from the audit report)</label>
+          <select name="safety_class" defaultValue="">
+            <option value="">— not classified —</option>
+            <option value="C1">C1 — dangerous: close / evacuate now</option>
+            <option value="C2A">C2A — major repairs, vacate while repairing</option>
+            <option value="C2B">C2B — major repairs, can stay in use</option>
+            <option value="C3">C3 — minor repairs</option>
+          </select></>}
         <label>Notes</label><textarea name="notes" />
-        <label>Photo</label><input type="file" name="photo" accept="image/*" capture="environment" />
+        <label>Photo{kind === "cleaning" ? " (required — proof the drain was cleaned)" : ""}</label><input type="file" name="photo" accept="image/*" capture="environment" required={kind === "cleaning"} />
+        {err && <div className="alert alert-red">{err}</div>}
         <div className="actions"><button type="button" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={busy}>Save</button></div>
       </form>
     </Modal>

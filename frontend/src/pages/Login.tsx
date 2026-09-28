@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, setViewOffice } from "../lib/api";
 import { Alert } from "../components/ui";
 
 export default function Login() {
@@ -17,8 +17,9 @@ export default function Login() {
     e.preventDefault();
     setErr(""); setBusy(true);
     try {
+      setViewOffice(null);
       await api("/api/auth/login", { json: { username: u, password: p } });
-      await qc.invalidateQueries();
+      qc.clear();
       const next = sp.get("next");
       nav(next && next.startsWith("/app") ? next : "/app/dashboard");
     } catch (x: any) { setErr(x.message); } finally { setBusy(false); }

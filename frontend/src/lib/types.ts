@@ -1,9 +1,22 @@
-export type Role = "engineer" | "ee" | "auditor";
+export type Role = "engineer" | "ee" | "se" | "ce" | "auditor";
+export const FIELD_ROLES: Role[] = ["engineer", "ee", "se", "ce"];
+export const SENIOR_ROLES: Role[] = ["ee", "se", "ce"];
 export type Band = "Urgent" | "This week" | "This month" | "Next season" | "Monitor";
 export type Severity = "red" | "amber" | "yellow";
 export type AssetType = "road_section" | "bridge" | "culvert" | "building";
 
-export interface Me { username: string; name: string; role: Role; district: string }
+export interface OfficeBrief {
+  id: number; code: string; name: string; level: string; level_label: string; head: string;
+  parent_id: number | null; onboarded: boolean; talukas: string[];
+}
+export interface Me {
+  username: string; name: string; role: Role; district: string; role_label: string; rank: number;
+  home: OfficeBrief; office: OfficeBrief; breadcrumb: OfficeBrief[]; offices: OfficeBrief[]; approval_limit: number | null;
+}
+export interface Sla {
+  hours: number; due: string; state: "on_time" | "overdue" | "met" | "missed" | "na"; hours_left?: number;
+  escalated_to: Role | null; escalated_label?: string | null; escalation_rank: number;
+}
 
 export interface Flag {
   key: string; severity: Severity; type: string; title: string; detail: string; action: string;
@@ -29,6 +42,7 @@ export interface Work {
   liability_end: string | null; liability_estimated: boolean; completion_period_days: number | null;
   reason: string | null; source: string; asset_name?: string; asset_code?: string;
   flags?: { severity: Severity; title: string }[];
+  approver?: Role; approver_label?: string; can_approve?: boolean;
 }
 
 export interface Complaint {
@@ -39,6 +53,8 @@ export interface Complaint {
   assigned_kind: string | null; assigned_to: string | null; condition: number | null;
   photo_url: string | null; fix_photo_url: string | null; reopened_count: number;
   created_at: string; verified_at: string | null; assigned_at: string | null; fixed_at: string | null; closed_at: string | null;
+  sla?: Sla; source?: string; permit_id?: number | null; fix_distance_m?: number | null; office?: string | null;
+  utility?: { permit_id: number; agency: string; purpose: string; to_date: string; status: string } | null;
   events?: { type: string; message: string; at: string }[];
 }
 
@@ -52,5 +68,13 @@ export interface Priority {
   score: number; band: Band; urgent: boolean; urgent_reason: string | null; action: string;
   factors: Record<string, number>; weights: Record<string, number>;
   inputs: { condition: number | null; condition_date: string | null; reports_90d: number;
-    years_since_major_work: number | null; repairs_12m: number };
+    years_since_major_work: number | null; repairs_12m: number; safety_class?: string | null };
+}
+
+export interface Permit {
+  id: number; asset_id: number; asset_name: string | null; road_code: string | null; start_km: number | null; end_km: number | null;
+  agency: string; purpose: string; length_m: number | null; from_date: string; to_date: string; emergency: boolean;
+  status: "applied" | "approved" | "rejected" | "restored"; restoration_charge: number | null; decision_note: string | null;
+  decided_by: string | null; restored_on: string | null; created_by: string | null; created_at: string;
+  overdue_days: number; utility_liable_until: string | null;
 }

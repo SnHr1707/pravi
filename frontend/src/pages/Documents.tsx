@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileUp } from "lucide-react";
 import { api, postForm } from "../lib/api";
-import type { AssetRow, Flag, Work } from "../lib/types";
+import { FIELD_ROLES, type AssetRow, type Flag, type Work } from "../lib/types";
 import { STATUS_LABEL, WORK_TYPES, fdate } from "../lib/format";
 import { Alert, Badge, FlagCard, useToast } from "../components/ui";
 import { Can } from "../components/StaffLayout";
@@ -74,7 +74,7 @@ export default function Documents() {
       </div>
       <div className="grid g-main">
         <div>
-          <Can roles={["engineer", "ee"]}>
+          <Can roles={FIELD_ROLES}>
             <div className="card">
               <div className={`dropzone ${drag ? "drag" : ""}`} onClick={() => fileRef.current?.click()}
                 onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
@@ -95,7 +95,7 @@ export default function Documents() {
           {doc && <Review key={doc.id} doc={doc} onDone={() => { setSaved(true); qc.invalidateQueries(); }} onReject={() => { setDoc(null); qc.invalidateQueries(); }} />}
         </div>
         <div>
-          <Can roles={["engineer", "ee"]}>
+          <Can roles={FIELD_ROLES}>
             <div className="card">
               <h2>Practice with sample documents</h2>
               <p className="small muted">Made-up PDFs in the real Gujarat R&amp;B format. Try them in order to see a road move through its life.</p>

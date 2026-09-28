@@ -17,7 +17,7 @@ export default function Settings() {
   const [test, setTest] = useState<any>(null);
   const [testing, setTesting] = useState(false);
   useEffect(() => { if (wq.data) setW(wq.data); }, [wq.data]);
-  const isEE = me?.role === "ee";
+  const isEE = !!me && ["ee", "se", "ce"].includes(me.role);
 
   const save = async (vals: Record<string, number>) => {
     const r = await api<Record<string, number>>("/api/settings/weights", { method: "PUT", json: vals });

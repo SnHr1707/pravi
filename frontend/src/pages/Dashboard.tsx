@@ -11,7 +11,7 @@ import { BandBadge, ErrorBox, FlagCard, Loading, ScoreBox } from "../components/
 import { useMe } from "../components/StaffLayout";
 
 interface Dash {
-  district: string;
+  district: string; office: { name: string; level: string };
   kpis: Record<string, number> & { by_type: Record<string, number> };
   flags: Flag[]; top: AssetRow[]; assets: AssetRow[];
 }
@@ -35,6 +35,8 @@ export default function Dashboard() {
 
   // The to-do list: only things someone should act on, in plain words
   const todos = [
+    { n: k.escalated_to_me, t: "Complaints escalated to you", s: "Past their deadline at the level below", to: "/app/complaints?tab=late", c: "var(--red)" },
+    { n: k.awaiting_my_approval, t: "Works waiting for your approval", s: "Within your sanction limit", to: "/app/works", c: "var(--brand-2)" },
     { n: k.new_complaints, t: "New complaints to check on site", s: "Citizens reported these", to: "/app/complaints", c: "var(--accent)" },
     { n: k.to_assign, t: "Checked complaints to assign", s: "Send to contractor or department", to: "/app/complaints", c: "var(--brand-2)" },
     { n: k.paid_in_liability, t: `Stop payments worth ${inr(k.money_at_risk)}`, s: "The contractor must repair these for free", to: "/app/works", c: "var(--red)" },
@@ -42,14 +44,20 @@ export default function Dashboard() {
     { n: k.urgent, t: "Unsafe structures", s: "Bridge or building needs urgent action", to: "/app/assets", c: "#b42318" },
     { n: k.docs_to_review, t: "Documents waiting for your check", s: "Uploaded but not saved yet", to: "/app/documents", c: "var(--brand-2)" },
     { n: k.delayed_works, t: "Works running late", s: "Past their completion date", to: "/app/works", c: "var(--amber)" },
-  ].filter((x) => x.n > 0);
+    { n: k.permits_to_decide, t: "Road-digging requests to decide", s: "Gas, water, power or cable work", to: "/app/digging", c: "var(--brand-2)" },
+    { n: k.roads_not_restored, t: "Dug roads not restored", s: "The utility must restore them", to: "/app/digging", c: "var(--amber)" },
+  ].filter((x) => x.n > 0)
+    // senior officers (SE, CE) oversee; site work stays with the division and sub-divisions
+    .filter((x) => !(me && ["se", "ce"].includes(me.role) && ["/app/documents"].includes(x.to)))
+    .filter((x) => !(me && ["se", "ce"].includes(me.role) && x.t.startsWith("New complaints") || me && ["se", "ce"].includes(me.role) && x.t.startsWith("Checked complaints")));
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1>{greeting()}{me ? `, ${me.name.split(" (")[0]}` : ""}</h1>
-          <p>Here is what needs attention in R&amp;B {d.district} today.</p>
+          <p>Here is what needs attention in <b>{d.office?.name || d.district}</b> today.
+            {k.overdue_complaints > 0 && <> {k.overdue_complaints} complaint{k.overdue_complaints > 1 ? "s are" : " is"} past the repair deadline.</>}</p>
         </div>
       </div>
 

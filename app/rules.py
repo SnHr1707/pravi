@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 
 from sqlmodel import Session, select
 
-from .models import Asset, Complaint, Inspection, Setting, Work
+from .models import Asset, Complaint, DigPermit, Inspection, Setting, Work
 
 MAJOR_WORKS = {"new_construction", "recarpet", "rehab", "widening", "reconstruction", "structural_repair"}
 REPAIR_WORKS = {"repair", "recarpet", "rehab", "waterproofing", "structural_repair"}
@@ -67,10 +67,14 @@ class Ctx:
     inspections: Dict[int, List[Inspection]] = field(default_factory=dict)
     complaints: Dict[int, List[Complaint]] = field(default_factory=dict)
     weights: Dict[str, float] = field(default_factory=dict)
+    permits: List[DigPermit] = field(default_factory=list)
 
 
-def load_ctx(session: Session, district: str, today: Optional[date] = None) -> Ctx:
-    assets = {a.id: a for a in session.exec(select(Asset).where(Asset.district == district)).all()}
+def load_ctx(session: Session, district: str, today: Optional[date] = None, offices=None) -> Ctx:
+    """Everything the rules need. `offices` limits the assets to one unit of the hierarchy
+    (works stay district-wide so liability on a road is always judged on its full history)."""
+    assets = {a.id: a for a in session.exec(select(Asset).where(Asset.district == district)).all()
+              if offices is None or a.office_id in offices}
     works = [w for w in session.exec(select(Work).where(Work.district == district)).all()]
     insp = defaultdict(list)
     for i in session.exec(select(Inspection)).all():
@@ -80,9 +84,12 @@ def load_ctx(session: Session, district: str, today: Optional[date] = None) -> C
         v.sort(key=lambda i: i.inspected_on, reverse=True)
     comps = defaultdict(list)
     for c in session.exec(select(Complaint).where(Complaint.district == district)).all():
-        comps[c.asset_id].append(c)
+        if c.asset_id in assets:
+            comps[c.asset_id].append(c)
+    permits = [p for p in session.exec(select(DigPermit).where(DigPermit.district == district)).all()
+               if p.asset_id in assets]
     return Ctx(today=today or date.today(), assets=assets, works=works, inspections=insp,
-               complaints=comps, weights=get_weights(session))
+               complaints=comps, weights=get_weights(session), permits=permits)
 
 
 # ---------------------------------------------------------------- matching
@@ -240,6 +247,12 @@ def priority(ctx: Ctx, asset: Asset) -> dict:
         if not last or (ctx.today - last.inspected_on).days > 365:
             urgent, reason = True, "Bridge inspection overdue by 6+ months"
 
+    audit = last_of_kind(ctx, asset, "structural_audit")
+    if audit and audit.safety_class in ("C1", "C2A"):
+        urgent = True
+        reason = {"C1": "Structural audit class C1 — dangerous, close / evacuate",
+                  "C2A": "Structural audit class C2A — major repairs, vacate while repairing"}[audit.safety_class]
+
     if urgent:
         band = "Urgent"
     elif score >= 80:
@@ -273,6 +286,7 @@ def priority(ctx: Ctx, asset: Asset) -> dict:
             "reports_90d": reports,
             "years_since_major_work": round(years, 1) if years is not None else None,
             "repairs_12m": len(reps),
+            "safety_class": audit.safety_class if audit else None,
         },
     }
 
@@ -288,6 +302,13 @@ def _flag(key, severity, ftype, title, detail, asset, action, work=None, complai
         "ticket": complaint.ticket if complaint else None,
         "amount": amount, "action": action,
     }
+
+
+SAFETY_CLASS = {"C1": "dangerous — close / evacuate now", "C2A": "major repairs needed, vacate while repairing",
+                "C2B": "major repairs needed, can stay in use", "C3": "minor repairs"}
+SAFETY_ACTION = {"C1": "Close the structure to the public today and plan demolition / reconstruction",
+                 "C2A": "Vacate and sanction structural repairs", "C2B": "Sanction structural repairs",
+                 "C3": "Routine repairs"}
 
 
 def compute_flags(ctx: Ctx) -> List[dict]:
@@ -409,6 +430,21 @@ def compute_flags(ctx: Ctx) -> List[dict]:
                     f"{'never' if not last else last.inspected_on.strftime('%b %Y')}. Audits are due every 5 years for buildings over 15 years old.",
                     asset, "Commission structural audit"))
 
+        # 11. Structural safety class (Mumbai-style C1 / C2A / C2B / C3)
+        if asset.asset_type in ("building", "bridge"):
+            audit = last_of_kind(ctx, asset, "structural_audit")
+            if audit and audit.safety_class in SAFETY_CLASS and audit.safety_class != "C3":
+                acted = any((w.started_on or w.awarded_on or w.tendered_on or w.sanctioned_on or date.min) >= audit.inspected_on
+                            for w in works_on(ctx, asset) if w.status != "cancelled")
+                if not acted or audit.safety_class == "C1":
+                    sev = "amber" if audit.safety_class == "C2B" else "red"
+                    flags.append(_flag(
+                        f"safety-{asset.id}", sev, "structural_danger",
+                        f"Structural class {audit.safety_class}: {SAFETY_CLASS[audit.safety_class]}",
+                        f"{asset.name}: audit of {audit.inspected_on:%d %b %Y} placed it in class {audit.safety_class}"
+                        + ("" if acted else "; no repair work sanctioned since") + ".",
+                        asset, SAFETY_ACTION[audit.safety_class]))
+
         # complaint-level flags
         for c in comps:
             if c.status == "assigned" and c.assigned_kind == "contractor" and c.assigned_at \
@@ -427,6 +463,18 @@ def compute_flags(ctx: Ctx) -> List[dict]:
                         f"Complaint unresolved for {(t - since).days} days",
                         f"Ticket {c.ticket} ({c.issue_type}, {c.report_count} reports) verified but not fixed.",
                         asset, "Assign and fix", complaint=c))
+
+    # 12. Road cut by a utility and not restored
+    for p in ctx.permits:
+        asset = ctx.assets.get(p.asset_id)
+        if asset and p.status == "approved" and p.to_date < t:
+            flags.append(_flag(
+                f"dig-{p.id}", "red" if (t - p.to_date).days > 15 else "amber", "dig_not_restored",
+                f"{p.agency} dug the road and has not restored it",
+                f"Permit #{p.id}: {asset.road_code or asset.name} {('km %g–%g' % (p.start_km, p.end_km)) if p.start_km is not None else ''} "
+                f"for {p.purpose or 'utility work'}; digging window ended {p.to_date:%d %b %Y} ({(t - p.to_date).days} days ago).",
+                asset, f"Get {p.agency} to restore the road, or restore it and recover the restoration charge",
+                amount=p.restoration_charge))
 
     # 3. Delayed works  /  6. Liability expiring soon
     for w in ctx.works:
@@ -459,7 +507,7 @@ def contractor_scorecard(ctx: Ctx) -> List[dict]:
     rows: Dict[str, dict] = {}
     today = ctx.today
     for w in ctx.works:
-        if not w.contractor:
+        if not w.contractor or w.asset_id not in ctx.assets:
             continue
         r = rows.setdefault(w.contractor, {"contractor": w.contractor, "works": 0, "value": 0.0,
                                            "active_liabilities": 0, "defects_in_liability": 0,

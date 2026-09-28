@@ -10,7 +10,7 @@ import { BaseMap, FitBounds } from "../components/AssetMap";
 import { Alert } from "../components/ui";
 
 type MapAsset = { geometry: [number, number][] | null };
-type Result = { ticket: string; merged: boolean; asset: string; km: number | null; liable_contractor: string | null };
+type Result = { ticket: string; merged: boolean; asset: string; km: number | null; liable_contractor: string | null; liable_utility?: string | null; sla_hours?: number };
 
 function ClickToPin({ onPick }: { onPick: (p: [number, number]) => void }) {
   useMapEvents({ click: (e) => onPick([e.latlng.lat, e.latlng.lng]) });
@@ -81,6 +81,8 @@ export default function Report() {
             <p className="muted">{done.asset}{done.km !== null ? ` · km ${done.km}` : ""}</p>
             {done.merged && <Alert tone="blue">{t.merged}</Alert>}
             {done.liable_contractor && <Alert tone="green">{t.liable(done.liable_contractor)}</Alert>}
+            {done.liable_utility && <Alert tone="green">{t.utility(done.liable_utility)}</Alert>}
+            {done.sla_hours && <p className="small">⏱ {done.sla_hours < 48 ? `${done.sla_hours} h` : `${done.sla_hours / 24} d`}</p>}
             <Link className="btn btn-primary w-full btn-lg" to={`/track?t=${done.ticket}`}>{t.track}</Link>
             <p><a href="/report">{t.another}</a></p>
           </div>

@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Building2, FileUp, HardHat, House, IndianRupee, LogOut, MessageSquareWarning, Settings, Users } from "lucide-react";
-import { api, ApiError } from "../lib/api";
+import { Building2, Construction, FileUp, HardHat, House, IndianRupee, LogOut, MessageSquareWarning, Network, Settings, Users } from "lucide-react";
+import { api, ApiError, setViewOffice } from "../lib/api";
 import type { Me, Role } from "../lib/types";
 
 export function useMe() {
@@ -14,7 +14,7 @@ export function Can({ roles, children }: { roles: Role[]; children: React.ReactN
   return data && roles.includes(data.role) ? <>{children}</> : null;
 }
 
-const ROLE_LABEL: Record<Role, string> = { engineer: "Deputy Engineer", ee: "Executive Engineer", auditor: "Auditor (view only)" };
+const INDENT: Record<string, number> = { department: 0, wing: 0, circle: 1, division: 2, subdivision: 3 };
 
 export default function StaffLayout() {
   const me = useMe();
@@ -30,11 +30,17 @@ export default function StaffLayout() {
   if (!me.data) return <div className="page muted">Could not reach the server.</div>;
   const k = dash.data?.kpis;
   const role = me.data.role;
+  const senior = role !== "engineer";
 
   const logout = async () => {
     await api("/api/auth/logout", { method: "POST" });
+    setViewOffice(null);
     qc.clear();
     nav("/login");
+  };
+  const switchOffice = (id: string) => {
+    setViewOffice(Number(id) === me.data!.home.id ? null : Number(id));
+    qc.invalidateQueries();
   };
   const Item = ({ to, icon: Icon, label, count }: { to: string; icon: any; label: string; count?: number }) => (
     <NavLink to={to} className={({ isActive }) => `nav ${isActive ? "active" : ""}`}>
@@ -45,20 +51,32 @@ export default function StaffLayout() {
     <div className="shell">
       <aside className="side">
         <NavLink className="logo" to="/app/dashboard">
-          <span className="mark">P</span><span>Pravi<small>R&amp;B Asset Tracker · {me.data.district}</small></span>
+          <span className="mark">P</span><span>Pravi<small>R&amp;B Asset Tracker · Gujarat</small></span>
         </NavLink>
+        {me.data.offices.length > 1 ? (
+          <div className="office-pick" title="Which office's data you are looking at">
+            <span className="lbl-s">Viewing</span>
+            <select value={me.data.office.id} onChange={(e) => switchOffice(e.target.value)}>
+              {me.data.offices.map((o) => (
+                <option key={o.id} value={o.id}>{"  ".repeat(Math.max(0, (INDENT[o.level] ?? 0) - (INDENT[me.data!.home.level] ?? 0)))}{o.name}</option>
+              ))}
+            </select>
+          </div>
+        ) : <div className="office-pick"><span className="lbl-s">Office</span><b>{me.data.office.name}</b></div>}
         <Item to="/app/dashboard" icon={House} label="Home" />
         <Item to="/app/complaints" icon={MessageSquareWarning} label="Complaints" count={k ? k.new_complaints + k.to_assign : undefined} />
         <Item to="/app/assets" icon={Building2} label="Roads & buildings" />
-        <Item to="/app/works" icon={HardHat} label="Works & tenders" />
+        <Item to="/app/works" icon={HardHat} label="Works & tenders" count={k?.awaiting_my_approval || undefined} />
         <Item to="/app/documents" icon={FileUp} label="Upload documents" count={k?.docs_to_review || undefined} />
-        {role !== "engineer" && <Item to="/app/planner" icon={IndianRupee} label="Budget plan" />}
+        <Item to="/app/digging" icon={Construction} label="Road digging" count={(k?.permits_to_decide || 0) + (k?.roads_not_restored || 0) || undefined} />
+        {senior && <Item to="/app/planner" icon={IndianRupee} label="Budget plan" />}
         <div className="sec">More</div>
+        {senior && <Item to="/app/offices" icon={Network} label="Offices" />}
         <Item to="/app/contractors" icon={Users} label="Contractors" />
         <Item to="/app/settings" icon={Settings} label="Settings" />
         <div className="me">
           <div className="n">{me.data.name.split(" (")[0]}</div>
-          <div className="r">{ROLE_LABEL[role]}</div>
+          <div className="r">{me.data.role_label}<br />{me.data.home.name}</div>
           <button className="btn-sm" onClick={logout}><LogOut size={14} /> <span className="lbl">Log out</span></button>
         </div>
       </aside>

@@ -5,7 +5,7 @@
 It builds the inventory from paperwork R&B already produces (tender notices, work orders and completion certificates) and adds engineer inspections and citizen reports. From that data it answers three questions:
 
 1. **Who must pay for this repair?** If a contractor is still inside the Defects Liability Period (Form B-1, Clause 17-A), the fix costs the department ₹0.
-2. **What should we fix first?** A transparent 0–100 priority score, plus 10 risk flags.
+2. **What should we fix first?** A transparent 0–100 priority score, plus 12 risk flags.
 3. **Where does each rupee do the most good?** A budget planner that funds free fixes first, then safety, then value per rupee, with a reserved share for village roads.
 
 > Built for the **"Build for Billions"** hackathon. Demo district: **Vadodara**. All contractor names, figures and road codes in the demo data are fictional.
@@ -14,18 +14,24 @@ It builds the inventory from paperwork R&B already produces (tender notices, wor
 
 ## Live demo & logins
 
-| Role | Username | Password | Can do |
-|---|---|---|---|
-| Executive Engineer | `ee_vadodara` | `Exec@123` | Everything: sanction works, budget planner, weights, reset demo |
-| Deputy Engineer | `de_vadodara` | `Engineer@123` | Verify/assign/fix complaints, inspections, upload documents, propose works |
-| Auditor (read-only) | `auditor_vadodara` | `Audit@123` | View timelines, flags, planner, contractor scorecard |
-| Citizen | *no login* | — | `/report` to report a problem, `/track` to follow a ticket |
+Logins follow the real R&B chain of command. Each officer sees their own office and everything below it.
 
-- Deployed URL: **`<add your Render URL here>`**
-- On Render's free tier the app sleeps when idle. Open it about a minute before the demo so it has time to wake up.
+| Role (office) | Username | Password | Sees / can do |
+|---|---|---|---|
+| Chief Engineer (State R&B wing) | `ce_state` | `Chief@123` | Whole wing; approves works above ₹2 crore; complaints late 7× escalate here |
+| Superintending Engineer (Vadodara Circle) | `se_vadodara` | `Super@123` | All divisions in the circle; approves works up to ₹2 crore |
+| Executive Engineer (Vadodara Division) | `ee_vadodara` | `Exec@123` | Whole division; approves works up to ₹50 lakh, road-digging permits, budget plan, settings, reset demo |
+| Deputy Executive Engineer (Vadodara Sub-division) | `de_vadodara` | `Engineer@123` | Talukas Vadodara, Waghodia, Savli, Desar; complaints, inspections, documents; approves works up to ₹5 lakh |
+| Deputy Executive Engineer (Padra Sub-division) | `de_padra` | `Engineer@123` | Talukas Padra, Karjan, Sinor |
+| Deputy Executive Engineer (Dabhoi Sub-division) | `de_dabhoi` | `Engineer@123` | Taluka Dabhoi |
+| Auditor (Vadodara Division) | `auditor_vadodara` | `Audit@123` | View only |
+| Citizen | *no login* | — | `/report` to report a problem, `/track` to follow a ticket, `/performance` for the public scorecard |
+
+- Deployed URL: **`<add your production Vercel URL here>`**
+- The first request after a quiet period can take a few seconds while the server starts.
 - **Settings → Reset demo data** restores the original demo state.
 
-> **Step-by-step database setup and a full "new road from PDFs" demo: see [DEMO_GUIDE.md](DEMO_GUIDE.md).**
+> **Submission documents:** [Notes for judges](docs/NOTES_FOR_JUDGES.md) · [Assumptions](docs/ASSUMPTIONS.md) · [Architecture diagram](docs/architecture.png) · [Setup & demo guide](DEMO_GUIDE.md)
 
 ### 5-minute demo path
 1. **Dashboard:** the priority map, "Fix first" list, red flags and ₹ at risk.
@@ -34,6 +40,8 @@ It builds the inventory from paperwork R&B already produces (tender notices, wor
 4. **Complaints:** verify, assign to the liable contractor, and a **defect notice** (Clause 17-A, 15 days) opens. Mark it fixed, and the citizen confirms on `/track`.
 5. **Asset page:** one road's lifelong timeline, its liability badge and its priority breakdown.
 6. **Budget planner:** a ₹10 crore budget split into free fixes, blocked payments, funded works and deferred works.
+7. **Hierarchy:** log in as `se_vadodara` → **Offices** compares sub-divisions; the **Viewing** box switches office; late complaints show who they escalated to.
+8. **Road digging:** a gas company dug a road still under guarantee — the complaint there goes to the utility, not the contractor.
 
 ---
 
@@ -43,10 +51,10 @@ It builds the inventory from paperwork R&B already produces (tender notices, wor
 |---|---|
 | Frontend | **React 19 + TypeScript**, Vite, React Router, TanStack Query, Tailwind CSS, React-Leaflet (OpenStreetMap), lucide-react icons |
 | Backend | **FastAPI** (Python 3.11), SQLModel / SQLAlchemy, Pydantic, Uvicorn |
-| Auth | JWT (PyJWT) in an httpOnly cookie, bcrypt password hashing, role-based access (EE / Deputy Engineer / Auditor) |
+| Auth | JWT (PyJWT) in an httpOnly cookie, bcrypt password hashing, role- and office-based access (CE / SE / EE / Deputy EE / Auditor) |
 | Database | **PostgreSQL** (Neon) in deployment; SQLite for local development |
 | Documents | pdfplumber + a rule-based reader for Gujarat R&B formats; optional **open-source LLM** (Qwen via OpenRouter, or Ollama / vLLM) |
-| Deploy | **Docker** (multi-stage: Node build → Python runtime) on **Render**; `render.yaml` Blueprint |
+| Deploy | **Vercel** (FastAPI serverless) + **Neon** Postgres; a Docker image for a state data centre is also included |
 
 ## System architecture
 
@@ -55,7 +63,7 @@ It builds the inventory from paperwork R&B already produces (tender notices, wor
 - **One FastAPI service** serves the web pages and the REST API. API docs are at `/docs`.
 - **Database:** Postgres (Neon) in deployment, SQLite locally. Every row carries its `district`, so the data can be partitioned by district to scale statewide.
 - **Frontend:** React + TypeScript (Vite) single-page app, served by FastAPI after `npm run build`. It's mobile-first for field staff and citizens.
-- **Auth:** bcrypt password hashes, a JWT in an httpOnly cookie, and role plus district in the token. Staff queries are filtered by the token's district.
+- **Auth:** bcrypt password hashes and a JWT in an httpOnly cookie. Every user belongs to an **office** (wing → circle → division → sub-division); every asset belongs to a sub-division. Staff queries are filtered to the office subtree the user is allowed to see.
 - **Document reader:** a rule-based reader tuned to Gujarat R&B formats, plus an **optional open-source LLM** (Qwen via OpenRouter, or Ollama/vLLM on a government server).
 
 ---
@@ -104,6 +112,31 @@ For every asset we keep five things:
 10. Structural audit overdue
 
 The dashboard also marks roads with no renewal in 7+ years as ageing assets.
+
+11. Structural safety class C1 / C2A / C2B without action (Mumbai-style audit classes)
+12. Road dug by a utility and not restored
+
+## R&B hierarchy in Pravi
+
+Gujarat R&B works through a chain of offices: **Secretary → Chief Engineer (wing: State, Panchayat, NH …) → Superintending Engineer (circle, 3–5 divisions) → Executive Engineer (division, about a district) → Deputy Executive Engineer (sub-division, one or more talukas) → Additional Assistant Engineer (section, field staff).**
+
+- **Scope:** each login sees its own office and everything below it. Senior officers can switch the **Viewing** office to look inside one unit.
+- **Offices page:** a league table of the units under you — open and late complaints, on-time repairs, drains cleaned, works waiting for approval, ₹ at risk.
+- **Approval by cost (technical sanction):** a proposed work goes to the lowest officer whose limit covers it — Deputy EE ≤ ₹5 lakh, EE ≤ ₹50 lakh, SE ≤ ₹2 crore, CE above (illustrative limits in `app/org.py`).
+- **Escalation:** every complaint has a repair deadline (potholes and waterlogging 48 h, 24 h in the monsoon; broken railings 24 h; others 7 days). Late → Executive Engineer; 3× late → Superintending Engineer; 7× late → Chief Engineer.
+- New assets created from documents are attached to the sub-division that covers their taluka.
+
+## Ideas taken from Mumbai (BMC)
+
+| Mumbai practice | In Pravi |
+|---|---|
+| Pothole complaints fixed within 24 h in the monsoon; Bombay HC (2025) set 48 h as the limit | Repair deadline on every complaint, shown to staff and citizens, with automatic escalation |
+| Roads under defect liability repaired by the contractor at no cost | Already core to Pravi (Clause 17-A) |
+| Trenching policy: utilities need permission, new roads can't be dug in their first year | **Road digging** page: permits, first-year and monsoon blocks, restoration charge, utility liable for 1 year; complaints at a dug spot go to the utility |
+| Nullah desilting proven with photos/video, tracked publicly | Culvert cleaning must carry a photo; drains cleaned before monsoon shown per sub-division |
+| Structural audit classes C1 / C2A / C2B / C3 | Recorded on building and bridge audits; C1/C2A make the asset Urgent |
+| Public ward-wise progress | Public **/performance** scorecard per sub-division |
+| Geo-tagged proof of repair | "Mark as repaired" needs an after photo; the phone's location is compared with the reported spot |
 
 ### Budget planner
 1. **Free fixes:** defects under liability go to the contractor at ₹0.
@@ -183,12 +216,15 @@ npm run build      # rebuilds frontend/dist, which FastAPI serves
 
 Limits on Vercel: uploads must be under about 4.5 MB (photos are compressed in the browser first; tender PDFs are usually small).
 
-## Deploy (Render + Neon, free)
+## Upgrading an existing database
+Start the new version against the same `DATABASE_URL`. On startup Pravi adds any missing columns and creates the office tree, the extra logins and the office of every asset automatically — existing data is kept. (Settings → Reset demo data gives a fresh demo instead.)
+
+## Deploy (Render + Neon, alternative)
 1. **Database:** create a free Postgres at [neon.tech](https://neon.tech) and copy the connection string.
 2. **Code:** push this folder to GitHub (`.env` and `*.db` are git-ignored).
 3. **Service:** on [render.com](https://render.com), choose **New → Blueprint** and pick the repo. `render.yaml` builds the Dockerfile: it compiles the React app, then runs FastAPI.
 4. **Environment:** set `DATABASE_URL` to the Neon string, plus `OPENROUTER_API_KEY` if you want the LLM. `JWT_SECRET` is generated automatically.
-5. **Check:** open the URL and test all three logins.
+5. **Check:** open the URL and test the logins.
 
 The same Docker image runs on any container host, including a state data-centre server.
 
@@ -205,18 +241,23 @@ The same Docker image runs on any container host, including a state data-centre 
 8. The citizen app covers English, Gujarati and Hindi; staff screens are in English for now.
 9. Demo logins stand in for government SSO in production.
 10. Scanned PDFs without a text layer need OCR (roadmap).
+11. The office tree has one onboarded division (Vadodara) with three sub-divisions; other circles/divisions are shown as "not on Pravi yet". Only the State R&B wing is modelled in the data. Sanction limits and escalation steps are illustrative and configurable.
+12. Traffic figures (PCU/day) for demo roads are illustrative; roads created from documents default to 1,000 PCU/day. In production they come from R&B's traffic census.
 
 ## Questions we asked (and answers)
 > *Fill in during the hackathon*
 - What does "infrastructure" mean here? → R&B assets: roads, bridges, buildings (Gujarat).
 - Track everything or only what needs maintenance? → Everything at base level; the system prioritises.
+- What hierarchy does R&B work in? → CE (wing) → SE (circle) → EE (division) → Deputy EE (sub-division) → AAE (section); built into logins, approvals and escalation.
+- Why drainage together with roads, bridges and buildings? → Water is the main cause of road failure; culverts and drains are part of the road asset and R&B's monsoon job.
 - …
 
 ## Project structure
 ```
 app/
   main.py         routes: pages, auth, citizen, complaints, works, documents, planner, settings
-  models.py       tables: asset, work, document, inspection, complaint, photo, event, setting, user
+  models.py       tables: office, user, asset, work, document, inspection, complaint, dig permit, photo, event, setting
+  org.py          R&B hierarchy: offices, scope, sanction limits, complaint deadlines and escalation
   rules.py        liability windows, flags, priority score, contractor scorecard
   planner.py      budget planner
   extraction.py   PDF → fields (Gujarat rules + optional open-source LLM)

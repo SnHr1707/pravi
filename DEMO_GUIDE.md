@@ -62,7 +62,7 @@ We'll build a road that does not exist in the system yet: **Waghodia to Jarod Ro
 | **5. Look at it** | **Roads & buildings** → *Waghodia to Jarod Road*, open the **History** tab. | One timeline: registered → approved → tender → contract → work started → completed. | "One lifelong record per asset." |
 | **6. Citizen complaint** | In the citizen tab (`/report`), tap **on the new road line** (between Waghodia and Jarod), choose **Pothole**, and submit. | The ticket says **"This road is still under guarantee. Shreeji Infrastructure must repair it at no cost to the public."** | "The citizen knows who is responsible, instantly." |
 | **7. Engineer acts** | Staff tab → **Complaints** → the new ticket → **Check on site** → **Assign repair** (to the contractor, ₹0). | A **repair notice** PDF opens (Clause 17-A, 15 days). | "The notice is generated with the contract details filled in." |
-| **8. Repair and confirm** | **Mark as repaired**, then in the citizen tab open **Track** with the ticket number and press **Yes, it's fixed**. | Closed. If the citizen says **No**, it reopens and goes back to the contractor. | "A repair only counts when the citizen confirms it." |
+| **8. Repair and confirm** | **Mark as repaired** (add any photo as the "after" photo — it is required; on a phone, also tap **Add my current location**), then in the citizen tab open **Track** with the ticket number and press **Yes, it's fixed**. | Closed. If the citizen says **No**, it reopens and goes back to the contractor. | "A repair only counts when the citizen confirms it." |
 | **9. The money-saver** | **Upload documents** → Try **N5** (a paid "special repair" tender on km 5–7 of the same road). | Before saving, a **red warning** says this stretch is under guarantee. After saving, **Home** shows **"Stop payments — the contractor must repair these for free"**, and the **Budget plan** lists it under **Do not pay**. | "Pravi stops the department paying ₹8.75 lakh for a repair the contractor owes for free." |
 
 **Tips**
@@ -80,3 +80,17 @@ We'll build a road that does not exist in the system yet: **Waghodia to Jarod Ro
 | `4_tender_Padra-Karjan_resurfacing.pdf` | A legitimate resurfacing tender on an old road → no alert |
 
 Regenerate all sample PDFs (dates relative to today): `python scripts/make_sample_docs.py`
+
+## Part C — Hierarchy and the ideas from Mumbai (5 minutes)
+
+| Step | What you do | What happens | What to say to the judges |
+|---|---|---|---|
+| **1. Chain of command** | Log in as **`ce_state` / `Chief@123`** → **Offices**. Click **Vadodara Circle**, then **Vadodara Division**. | A league table of the units below: open and late complaints, on-time repairs, drains cleaned, works waiting for approval, ₹ at risk. Other divisions show "not on Pravi yet". | "Each officer sees their own office and everything under it — the same way R&B is organised." |
+| **2. Switch office** | In the sidebar **Viewing** box, pick **Padra Sub-division**. | Every page (map, assets, complaints, works) now shows only Padra. | "A Chief Engineer can look inside any sub-division in one click." |
+| **3. Escalation** | **Complaints → Past deadline**. | Each late complaint says how late it is and who it has escalated to (Executive → Superintending → Chief Engineer). The CE's Home shows "Complaints escalated to you". | "Mumbai fixes monsoon potholes in 24 h and the Bombay High Court set 48 h. If a sub-division misses it, the complaint climbs the ladder by itself." |
+| **4. Approval by cost** | Log in as **`de_vadodara`** → **Works** → the ₹3.8 lakh railing work → **Move to Approved** (allowed). Then as **`ee_vadodara`** open the ₹2.6 crore re-carpeting proposal. | The Deputy EE can approve up to ₹5 lakh; the EE sees "needs approval from the Chief Engineer". | "Files go to the right desk automatically — no one sits on a proposal they can't sanction." |
+| **5. Road digging** | As **`ee_vadodara`** → **Road digging**. Note Gujarat Gas dug MDR-VW km 5.6–6.4 and has **not restored** it. Then **Complaints** → the "gas pipeline" crack → Check on site → Assign repair. | The complaint is assigned to **Gujarat Gas**, not the road contractor. | "Contractors often say 'someone dug my road'. Pravi records who dug where, so the right party pays." |
+| **6. New digging request** | **New digging request** on the new Waghodia–Jarod road (after Part B), then **Check the rules**. | "Not allowed: first year of the guarantee." On an older road it is allowed, with a restoration charge; monsoon dates are blocked. | "Taken from Mumbai's trenching policy." |
+| **7. Safety class** | **Roads & buildings → R&B Staff Quarters** → Log inspection → Structural audit → class **C1**. | The building becomes **Urgent — close / evacuate**. | "Mumbai's C1–C3 classes turn an audit report into an action." |
+| **8. Public scorecard** | Open **`/performance`** (no login). | Each sub-division's on-time repairs, drains cleaned before the monsoon, bridges inspected and dug roads not restored. | "Citizens can see how their taluka's office is doing." |
+
