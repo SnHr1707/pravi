@@ -1221,18 +1221,16 @@ def reset_demo(user=Depends(EE)):
 
 # ------------------------------------------------------------------ React single-page app
 
-if FRONTEND_DIST.exists():
-    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
-
-
 @app.get("/{full_path:path}", include_in_schema=False)
 def spa(full_path: str):
     """Serve the React app for every non-API path (client-side routing)."""
     if full_path.startswith("api/"):
         raise HTTPException(404)
     f = FRONTEND_DIST / full_path
-    if full_path and f.is_file() and FRONTEND_DIST in f.resolve().parents:
-        return FileResponse(f)
+    if full_path and f.is_file() and FRONTEND_DIST.resolve() in f.resolve().parents:
+        # hashed build files (assets/index-XXXX.js) never change, so browsers may cache them for a year
+        cache = "public, max-age=31536000, immutable" if full_path.startswith("assets/") else "no-cache"
+        return FileResponse(f, headers={"Cache-Control": cache})
     index = FRONTEND_DIST / "index.html"
     if not index.exists():
         return HTMLResponse("<h3>Frontend not built.</h3><p>Run <code>cd frontend &amp;&amp; npm install &amp;&amp; npm run build</code>, "
