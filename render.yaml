@@ -1,0 +1,18 @@
+# One-click deploy on Render: New + > Blueprint > pick this repo.
+# Builds the Docker image (React build + FastAPI) and runs it as one web service.
+services:
+  - type: web
+    name: pravi-rnb
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL        # Neon Postgres connection string (keeps data across restarts)
+        sync: false
+      - key: OPENROUTER_API_KEY  # optional: open-source Qwen via OpenRouter for document reading
+        sync: false
+      - key: LLM_MODEL           # optional, e.g. qwen/qwen3.6-27b (see https://openrouter.ai/qwen)
+        sync: false
